@@ -19,6 +19,7 @@ import 'package:clipshare/app/handlers/sync/abstract_data_sender.dart';
 import 'package:clipshare/app/services/clipboard_service.dart';
 import 'package:clipshare/app/utils/extensions/number_extension.dart';
 import 'package:clipshare/app/utils/global.dart';
+import 'package:clipshare/app/utils/permission_helper.dart';
 import 'package:clipshare_clipboard_listener/enums.dart';
 import 'package:clipshare/app/data/enums/translation_key.dart';
 import 'package:clipshare/app/data/models/clean_data_config.dart';
@@ -50,6 +51,7 @@ import 'package:get/get.dart';
 import 'package:jieba_flutter/analysis/jieba_segmenter.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:persistent_device_id/persistent_device_id.dart';
 import 'package:share_handler/share_handler.dart';
 import 'package:window_manager/window_manager.dart';
@@ -110,6 +112,9 @@ class ConfigService extends GetxService {
   //region 响应式
 
   //region 应用内配置
+
+  //中转服务版本号
+  final forwardServerVersion = ''.obs;
 
   //当前是否是深色模式
   bool get currentIsDarkMode {
@@ -542,6 +547,18 @@ class ConfigService extends GetxService {
 
   List<String> get noDiscoveryIfs => _noDiscoveryIfs.value;
 
+  static const _defaultIgnoredDiscoveryIfPrefixes = [
+    'lo',
+    'docker',
+    'br-',
+    'veth',
+    'virbr',
+    'tailscale',
+    'zt',
+    'podman',
+    'cni',
+  ];
+
   ///仅手动子网扫描发现设备
   final _onlyManualDiscoverySubNet = false.obs;
 
@@ -582,6 +599,11 @@ class ConfigService extends GetxService {
 
   Size? get fileSenderWindowSize => _fileSenderWindowSize.value;
 
+  ///设备连接和断开使用系统通知，若为true则使用托盘闪烁
+  final _useTrayFlashingForConnection = false.obs;
+
+  bool get useTrayFlashingForConnection => _useTrayFlashingForConnection.value;
+
   //endregion
 
   //endregion
@@ -594,6 +616,7 @@ class ConfigService extends GetxService {
     await loadConfigs();
     await initDeviceInfo();
     snowflake = Snowflake(device.guid.hashCode);
+    setSystemUIOverlayAutoStyle();
     return this;
   }
 
@@ -817,6 +840,7 @@ class ConfigService extends GetxService {
         return null;
       },
     );
+    _useTrayFlashingForConnection.value = await cfg.getConfigByKey(ConfigKey.useTrayFlashingForConnection, false);
   }
 
   ///初始化路径信息
@@ -847,7 +871,9 @@ class ConfigService extends GetxService {
         }
       }
     }
-    await Directory(documentsPath).create(recursive: true);
+    try {
+      await Directory(documentsPath).create(recursive: true);
+    } catch (_) {}
     await _initLogsDirPath();
     await _initDefaultFileStorePath();
   }
@@ -1216,18 +1242,30 @@ class ConfigService extends GetxService {
     VoidCallback? onAnimationFinish,
   ]) async {
     await configDao.addOrUpdate(ConfigKey.appTheme, appTheme.name);
-    var theme = appTheme == ThemeMode.dark ? darkThemeData : lightThemeData;
-    if (appTheme == ThemeMode.system) {
-      theme = Get.isPlatformDarkMode ? darkThemeData : lightThemeData;
+    updateAppTheme(context, appTheme, updateConfig: true, onAnimationFinish: onAnimationFinish,);
+  }
+
+  void updateAppTheme(
+    BuildContext context,
+    ThemeMode themeMode, {
+      bool updateConfig = false,
+      VoidCallback? onAnimationFinish,
+  }) {
+    late final bool isDarkTheme;
+    if (themeMode == ThemeMode.system) {
+      isDarkTheme = Get.isPlatformDarkMode;
+    }else{
+      isDarkTheme = themeMode == ThemeMode.dark;
     }
-    final isDarkTheme = theme == darkThemeData;
     ThemeSwitcher.of(context).changeTheme(
-      theme: theme,
+      theme: isDarkTheme ? darkThemeData : lightThemeData,
       isReversed: false,
       onAnimationFinish: onAnimationFinish,
     );
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      _appTheme.value = appTheme.name;
+      if(updateConfig) {
+        _appTheme.value = themeMode.name;
+      }
       if (isDarkTheme) {
         setSystemUIOverlayDarkStyle();
       } else {
@@ -1400,6 +1438,17 @@ class ConfigService extends GetxService {
     _noDiscoveryIfs.value = interfaces;
   }
 
+  bool shouldIgnoreDiscoveryInterface(NetworkInterface itf) {
+    final name = itf.name.trim();
+    if (name.isEmpty) {
+      return true;
+    }
+    if (noDiscoveryIfs.contains(name)) {
+      return true;
+    }
+    return _defaultIgnoredDiscoveryIfPrefixes.any(name.startsWith);
+  }
+
   ///仅手动子网扫描发现设备
   Future<void> setOnlyManualDiscoverySubNet(bool onlyManualDiscoverySubNet) async {
     await configDao.addOrUpdate(ConfigKey.onlyManualDiscoverySubNet, onlyManualDiscoverySubNet.toString());
@@ -1472,6 +1521,12 @@ class ConfigService extends GetxService {
     await configDao.addOrUpdate(key, "${size.width.toStringAsFixed(2)}x${size.height.toStringAsFixed(2)}");
   }
 
+  ///设备连接和断开使用系统通知，若为false则使用托盘闪烁
+  Future<void> setUseTrayFlashingForConnection(bool enable) async {
+    await configDao.addOrUpdate(ConfigKey.useTrayFlashingForConnection, enable.toString());
+    _useTrayFlashingForConnection.value = enable;
+  }
+
   //endregion
 
   //region 其他方法
@@ -1516,18 +1571,12 @@ class ConfigService extends GetxService {
 
   ///根据当前主题设置底部导航栏样式
   void setSystemUIOverlayAutoStyle() {
+    print("isDarkMode $currentIsDarkMode");
     if (currentIsDarkMode) {
       setSystemUIOverlayDarkStyle();
     } else {
       setSystemUIOverlayLightStyle();
     }
-  }
-
-  ///修改主题模式
-  void changeThemeMode(ThemeMode theme) {
-    setAppTheme(theme, Get.context!);
-    // Get.changeThemeMode(theme);
-    // setSystemUIOverlayAutoStyle();
   }
 
   ///更新语言选项

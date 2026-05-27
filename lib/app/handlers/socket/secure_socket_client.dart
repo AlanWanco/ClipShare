@@ -53,7 +53,6 @@ class SecureSocketClient {
   bool get isForwardMode => _connectionMode == ConnectionMode.forward;
 
   late final DataPacketSplitter _dataSplitter;
-  final StreamController<String> _msgStreamController = StreamController();
 
   SecureSocketClient._private(this.ip);
 
@@ -66,6 +65,7 @@ class SecureSocketClient {
     required BigInt prime1,
     required BigInt prime2,
     required String? dhAesKey,
+    String? sourceAddress,
     ConnectionMode connectionMode = ConnectionMode.direct,
     String? targetDevId,
     String? selfDevId,
@@ -79,6 +79,7 @@ class SecureSocketClient {
       ip,
       port,
       timeout: const Duration(seconds: 2),
+      sourceAddress: sourceAddress,
     );
     var ssc = SecureSocketClient.fromSocket(
       socket: socket,
@@ -231,16 +232,14 @@ class SecureSocketClient {
             },
             onError: (e) {
               Log.error(tag, "error:$e");
-              if (_onError != null) {
-                _onError!(e, this);
-              }
+              _onError?.call(e, this);
             },
             onDone: () {
-              if (_keyIsExchanged) {
+              if(_keyIsExchanged) {
                 _onDone?.call(this);
               }
               Log.debug(tag, "_onDone _keyIsExchanged $_keyIsExchanged");
-              _socket.close();
+              close();
             },
             cancelOnError: _cancelOnError,
           );
@@ -379,9 +378,7 @@ class SecureSocketClient {
       Log.debug(tag, "发送失败：$e");
       Log.debug(tag, "send, _onDone = ${_onDone == null}");
       Log.debug(tag, "$stack");
-      if (_onDone != null) {
-        _onDone!.call(this);
-      }
+      _onDone?.call(this);
     }
   }
 
@@ -414,15 +411,13 @@ class SecureSocketClient {
   }
 
   ///关闭连接
-  Future close() {
-    _msgStreamController.close();
-    return _socket.close();
-  }
-
-  ///强制关闭
-  void destroy() {
-    _msgStreamController.close();
-    return _socket.destroy();
+  Future<void> close() async {
+    try {
+      return await _socket.close();
+    } catch (_) {
+    } finally {
+      _socket.destroy();
+    }
   }
 
   static Uint8List createPacketHeader(

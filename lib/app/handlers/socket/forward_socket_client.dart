@@ -105,9 +105,9 @@ class ForwardSocketClient {
           }
         },
         onDone: () {
-          _onDone?.call(this);
           Log.debug(tag, "_onDone");
-          _socket.close();
+          _onDone?.call(this);
+          close();
         },
         cancelOnError: _cancelOnError,
       );
@@ -148,12 +148,12 @@ class ForwardSocketClient {
   }
 
   ///关闭连接
-  Future close() {
-    return _socket.close();
-  }
-
-  ///强制关闭
-  void destroy() {
-    return _socket.destroy();
+  Future<void> close() async {
+    try{
+      return await _socket.close();
+    }catch(_){
+    } finally {
+      _socket.destroy();
+    }
   }
 }

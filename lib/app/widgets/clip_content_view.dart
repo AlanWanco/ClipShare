@@ -142,10 +142,12 @@ class _ClipContentViewState extends State<ClipContentView> {
   Widget _buildImage(double maxWidth) {
     Widget image;
     if (widget.clipData.isImage) {
+      final cacheWidth = maxWidth <= 0 ? null : (maxWidth * MediaQuery.of(context).devicePixelRatio).round();
       image = Image.file(
         File(widget.clipData.data.content),
         fit: BoxFit.contain,
         width: maxWidth,
+        cacheWidth: cacheWidth,
       );
     } else {
       if (widget.clipData.notificationImage == null) {

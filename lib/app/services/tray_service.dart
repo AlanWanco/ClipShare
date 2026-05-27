@@ -4,38 +4,169 @@ import 'dart:io';
 import 'package:clipshare/app/data/enums/hot_key_type.dart';
 import 'package:clipshare/app/data/enums/translation_key.dart';
 import 'package:clipshare/app/handlers/hot_key_handler.dart';
+import 'package:clipshare/app/listeners/dev_alive_listener.dart';
+import 'package:clipshare/app/modules/device_module/device_controller.dart';
 import 'package:clipshare/app/services/config_service.dart';
+import 'package:clipshare/app/services/transport/connection_registry_service.dart';
 import 'package:clipshare/app/utils/constants.dart';
 import 'package:clipshare/app/utils/extensions/number_extension.dart';
 import 'package:clipshare/app/utils/log.dart';
-import 'package:flutter/cupertino.dart';
 import 'package:get/get.dart';
-import 'package:hotkey_manager/hotkey_manager.dart';
 import 'package:tray_manager/tray_manager.dart';
 
 import 'window_service.dart';
 
-class TrayService extends GetxService with TrayListener {
+class TrayService extends GetxService with TrayListener, DevAliveListener {
   bool _trayClick = false;
   static const tag = "TrayService";
   final windowService = Get.find<WindowService>();
   final appConfig = Get.find<ConfigService>();
+  final connRegService = Get.find<ConnectionRegistryService>();
+  Timer? _tooltipTimer;
+
+  String get _warningIconPath {
+    if(Platform.isWindows){
+      return Constants.logoWarnIcoPath;
+    }
+    return Constants.logoWarnPngPath;
+  }
+
+  String get _normalIconPath {
+    if(Platform.isWindows){
+      return Constants.logoIcoPath;
+    }
+    return Constants.logoPngPath;
+  }
 
   Future<TrayService> init() async {
     await _initTrayManager();
+    connRegService.addDevAliveListener(this);
     return this;
   }
 
   ///初始化托盘
   Future<void> _initTrayManager() async {
     trayManager.addListener(this);
-    if(!Platform.isLinux) {
-      trayManager.setToolTip(Constants.appName);
-    }
-    await trayManager.setIcon(
-      Platform.isWindows ? Constants.logoIcoPath : Constants.logoPngPath,
-    );
+    await setToolTip(Constants.appName);
+    await _resetIcon();
     updateTrayMenus();
+  }
+
+  @override
+  FutureOr<void> onConnected(_, _, _, _) {
+    _watchDevAlive();
+  }
+
+  @override
+  void onDisconnected(_) {
+    _watchDevAlive();
+  }
+
+  @override
+  void onPaired(_, _, _, _) {
+    _watchDevAlive();
+  }
+
+  @override
+  void onCancelPairing(_) {
+    _watchDevAlive();
+  }
+
+  void _watchDevAlive() {
+    _tooltipTimer?.cancel();
+    _tooltipTimer = Timer(1.s, (){
+      _updateDevAliveTooltip(Constants.appName);
+    });
+  }
+
+  Future<void> _updateDevAliveTooltip(String firstContent) async {
+    final devController = Get.find<DeviceController>();
+    final onlineList = devController.onlineList;
+    var pairedCnt = 0;
+    var unpairedCnt = 0;
+    for (var dev in onlineList) {
+      if (dev.isPaired) {
+        pairedCnt++;
+      } else {
+        unpairedCnt++;
+      }
+    }
+    await setToolTip(
+      TranslationKey.trayDevAliveTooltip.trParams({
+        "first": firstContent,
+        "pairedCnt": pairedCnt.toString(),
+        "unpairedCnt": unpairedCnt.toString(),
+      }),
+    );
+    if (pairedCnt <= 0) {
+      await trayManager.setIcon(_warningIconPath);
+    } else {
+      await trayManager.setIcon(_normalIconPath);
+    }
+  }
+
+  Future<void> setToolTip(String toolTip) async {
+    if (!Platform.isLinux) {
+      await trayManager.setToolTip(toolTip);
+    }
+  }
+
+  Future<void> _resetIcon() async {
+    String iconPath = _warningIconPath;
+    try{
+      final devController = Get.find<DeviceController>();
+      final onlineList = devController.onlineAndPairedList;
+      if(onlineList.isNotEmpty){
+        iconPath = _normalIconPath;
+      }
+    }catch(_){
+      //ignored
+    }
+    await trayManager.setIcon(iconPath);
+    await setToolTip(Constants.appName);
+  }
+
+  Future<void> flashTray(
+    String iconAssetPath, {
+    Duration? totalDuration,
+    Duration? intervalDuration,
+    String? toolTip,
+  }) async {
+    intervalDuration ??= const Duration(milliseconds: 300);
+    totalDuration ??= const Duration(seconds: 5);
+
+    final endTime = DateTime.now().add(totalDuration);
+    DateTime now;
+    if (toolTip != null) {
+      await _updateDevAliveTooltip(toolTip);
+    }
+    do {
+      await trayManager.setIcon("");
+      await Future.delayed(intervalDuration);
+
+      await trayManager.setIcon(iconAssetPath);
+      await Future.delayed(intervalDuration);
+
+      now = DateTime.now();
+    } while (now.isBefore(endTime));
+    await trayManager.setIcon("");
+    await Future.delayed(intervalDuration);
+    await _resetIcon();
+    await _updateDevAliveTooltip(Constants.appName);
+  }
+
+  Future<void> flashTrayWarning([String? toolTip]) async {
+    await flashTray(
+      _warningIconPath,
+      toolTip: toolTip,
+    );
+  }
+
+  Future<void> flashTrayNormal([String? toolTip]) async {
+    await flashTray(
+      _normalIconPath,
+      toolTip: toolTip,
+    );
   }
 
   Future<void> updateTrayMenus([bool registerKey = true]) async {
@@ -44,14 +175,18 @@ class TrayService extends GetxService with TrayListener {
     if (registerKey) {
       try {
         if (showMainWindowKeys.isNotEmpty) {
-          await AppHotKeyHandler.registerShowMainWindow(AppHotKeyHandler.toSystemHotKey(showMainWindowKeys));
+          await AppHotKeyHandler.registerShowMainWindow(
+            AppHotKeyHandler.toSystemHotKey(showMainWindowKeys),
+          );
         }
       } catch (err, stack) {
         Log.error(tag, err, stack);
       }
       try {
         if (exitAppKeys.isNotEmpty) {
-          await AppHotKeyHandler.registerExitApp(AppHotKeyHandler.toSystemHotKey(exitAppKeys));
+          await AppHotKeyHandler.registerExitApp(
+            AppHotKeyHandler.toSystemHotKey(exitAppKeys),
+          );
         }
       } catch (err, stack) {
         Log.error(tag, err, stack);
@@ -117,6 +252,7 @@ class TrayService extends GetxService with TrayListener {
   @override
   void onClose() {
     trayManager.removeListener(this);
+    connRegService.removeDevAliveListener(this);
     super.onClose();
   }
 }

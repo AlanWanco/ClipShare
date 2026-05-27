@@ -2,22 +2,17 @@ import 'dart:convert';
 import 'dart:ffi';
 import 'dart:io';
 import 'package:clipshare/app/data/enums/history_content_type.dart';
-import 'package:clipshare/app/data/enums/obj_storage_type.dart';
-import 'package:clipshare/app/data/models/storage/s3_config.dart';
-import 'package:clipshare/app/handlers/storage/s3_client.dart';
 import 'package:clipshare/app/modules/debug_module/debug_controller.dart';
 import 'package:clipshare/app/routes/app_pages.dart';
 import 'package:clipshare/app/services/android_notification_listener_service.dart';
 import 'package:clipshare/app/services/channels/android_channel.dart';
 import 'package:clipshare/app/services/config_service.dart';
 import 'package:clipshare/app/services/db_service.dart';
+import 'package:clipshare/app/services/tray_service.dart';
 import 'package:clipshare/app/utils/extensions/number_extension.dart';
 import 'package:clipshare/app/utils/global.dart';
-import 'package:clipshare/app/utils/log.dart';
 import 'package:clipshare/app/utils/notify_util.dart';
-import 'package:clipshare/app/utils/parallerl_task.dart';
 import 'package:clipshare/app/widgets/file_browser.dart';
-import 'package:clipshare_clipboard_listener/clipboard_manager.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:get/get.dart';
@@ -144,13 +139,10 @@ class DebugPage extends GetView<DebugController> {
         ),
         TextButton(
           onPressed: () async {
-            print("555");
-            const oldPath = "/storage/emulated/0/DCIM/Camera/IMG_20251004_231910.jpg";
-            final newPath = appConfig.cachePath;
-            final result = await clipboardManager.executePrivilegedCommand("cp $oldPath $newPath/aa.jpg && echo 0");
-            print("result: $result，${result=="0"}");
+            final trayService = Get.find<TrayService>();
+            await trayService.flashTrayWarning("6666");
           },
-          child: Text("Execute Privileged Command"),
+          child: Text("Test"),
         ),
         Expanded(
           child: FileBrowser(

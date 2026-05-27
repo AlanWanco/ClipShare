@@ -1213,7 +1213,7 @@ class StorageService extends GetxService with DataSender implements DiscoverList
 
   ///获取所有网卡 ip
   Future<List<String>> _getInterfaceIpList() async {
-    var interfaces = await NetworkInterface.list();
+    var interfaces = (await NetworkInterface.list()).where((itf) => !appConfig.shouldIgnoreDiscoveryInterface(itf));
     var expendAddress = interfaces.map((networkInterface) => networkInterface.addresses).expand((ip) => ip);
     return expendAddress.where((ip) => ip.type == InternetAddressType.IPv4).map((address) => address.address).toList();
   }

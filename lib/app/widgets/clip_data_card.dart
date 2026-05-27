@@ -175,6 +175,7 @@ class _ClipDataCardState extends State<ClipDataCard> with TickerProviderStateMix
                               ),
                               fit: BoxFit.fitWidth,
                               width: 200,
+                              cacheWidth: 400,
                             ),
                           ),
                           onTap: () {

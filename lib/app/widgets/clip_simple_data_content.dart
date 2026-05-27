@@ -42,7 +42,10 @@ class ClipSimpleDataContent extends StatelessWidget {
       }
       return const SizedBox.shrink();
     } else {
-      image = Image.file(File(content));
+      image = Image.file(
+        File(content),
+        cacheWidth: 600,
+      );
     }
     return MouseRegion(
       cursor: PlatformExt.isMobile ? SystemMouseCursors.click : MouseCursor.defer,
