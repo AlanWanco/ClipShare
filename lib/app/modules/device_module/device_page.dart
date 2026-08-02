@@ -1,4 +1,3 @@
-import 'dart:io';
 import 'dart:math';
 import 'dart:ui';
 
@@ -10,10 +9,11 @@ import 'package:clipshare/app/modules/device_module/device_controller.dart';
 import 'package:clipshare/app/services/config_service.dart';
 import 'package:clipshare/app/services/transport/socket_service.dart';
 import 'package:clipshare/app/utils/global.dart';
+import 'package:clipshare/app/utils/network_util.dart';
 import 'package:clipshare/app/widgets/base/tiny_segmented_control.dart';
 import 'package:clipshare/app/widgets/dialog/add_device_dialog.dart';
 import 'package:clipshare/app/widgets/condition_widget.dart';
-import 'package:clipshare/app/widgets/device_card.dart';
+import 'package:clipshare/app/widgets/device/device_card.dart';
 import 'package:clipshare/app/widgets/dot.dart';
 import 'package:clipshare/app/widgets/empty_content.dart';
 import 'package:clipshare/app/widgets/loading_dots.dart';
@@ -22,7 +22,7 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_staggered_grid_view/flutter_staggered_grid_view.dart';
 import 'package:get/get.dart';
-import 'package:material_design_icons_flutter/material_design_icons_flutter.dart';
+import 'package:flutter_material_design_icons/flutter_material_design_icons.dart';
 /**
  * GetX Template Generator - fb.com/htngu.99
  * */
@@ -33,6 +33,8 @@ class DevicePage extends GetView<DeviceController> {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
     return ListView(
       children: [
         Column(
@@ -83,10 +85,13 @@ class DevicePage extends GetView<DeviceController> {
                                     final filter = DevicePairedStatusFilter.values[index];
                                     appConfig.setDevicePairedStatusFilter(filter);
                                   },
-                                  contentPadding: const EdgeInsets.symmetric(vertical: 4,horizontal: 0),
+                                  contentPadding: const EdgeInsets.symmetric(vertical: 4, horizontal: 0),
                                   segmentSpacing: 2,
                                   padding: EdgeInsets.zero,
-                                  selectedColor: Colors.blue,
+                                  backgroundColor: isDark ? theme.cardTheme.color ?? theme.colorScheme.surfaceBright : null,
+                                  selectedBackgroundColor: isDark ? theme.colorScheme.primary.withValues(alpha: 0.20) : null,
+                                  selectedColor: isDark ? theme.colorScheme.onSurface : Colors.blue,
+                                  unselectedColor: theme.colorScheme.onSurface.withValues(alpha: isDark ? 0.62 : 0.70),
                                 ),
                               ],
                             ),
@@ -145,22 +150,22 @@ class DevicePage extends GetView<DeviceController> {
                       ),
                     ),
                   ),
-                  Tooltip(
-                    message: TranslationKey.devicePageRediscoverTooltip.tr,
-                    child: Obx(
-                      () => RotationTransition(
-                        turns: controller.animation.value,
-                        child: IconButton(
-                          onPressed: () {
-                            if (controller.discovering.value) {
-                              controller.rotationReverse.value = !controller.rotationReverse.value;
-                              controller.setRotationAnimation();
-                              sktService.restartDiscoveryDevices();
-                            } else {
-                              sktService.startDiscoveryDevices(manual: true);
-                            }
-                          },
-                          icon: const Icon(
+                  IconButton(
+                    tooltip: TranslationKey.devicePageRediscoverTooltip.tr,
+                    onPressed: () {
+                      if (controller.discovering.value) {
+                        controller.rotationReverse.value = !controller.rotationReverse.value;
+                        controller.setRotationAnimation();
+                        sktService.restartDiscoveryDevices();
+                      } else {
+                        sktService.startDiscoveryDevices(manual: true);
+                      }
+                    },
+                    icon: Obx(
+                      () => ExcludeSemantics(
+                        child: RotationTransition(
+                          turns: controller.animation.value,
+                          child: const Icon(
                             Icons.sync,
                             size: 20,
                           ),
@@ -237,7 +242,7 @@ class DevicePage extends GetView<DeviceController> {
               children: [
                 TextButton(
                   onPressed: () async {
-                    var interfaces = await NetworkInterface.list();
+                    final interfaces = await NetworkUtil.listInterfaces();
                     for (var itf in interfaces) {
                       // itf.addresses[0].type
                       print("${itf.name} ${itf.addresses.join(',')}");
@@ -253,7 +258,7 @@ class DevicePage extends GetView<DeviceController> {
                   },
                   child: Row(
                     children: [
-                      Icon(
+                      const Icon(
                         MdiIcons.web,
                         size: 20,
                       ),

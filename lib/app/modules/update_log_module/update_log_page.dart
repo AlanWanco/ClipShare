@@ -15,11 +15,18 @@ import 'package:get/get.dart';
 class UpdateLogPage extends GetView<UpdateLogController> {
   @override
   Widget build(BuildContext context) {
-    final currentTheme = Theme.of(context);
     final appConfig = Get.find<ConfigService>();
     final showAppBar = appConfig.isSmallScreen;
+    final String platform;
+    if (Platform.isIOS) {
+      platform = "IOS";
+    } else if (Platform.isMacOS) {
+      platform = "MacOS";
+    } else {
+      platform = Platform.operatingSystem.upperFirst;
+    }
     final content = FutureBuilder(
-      future: rootBundle.loadString("assets/md/updateLogs-${Platform.operatingSystem.upperFirst}.md"),
+      future: rootBundle.loadString("assets/md/updateLogs-$platform.md"),
       builder: (context, v) {
         return Markdown(
           data: v.data ?? TranslationKey.failedToReadUpdateLog.tr,
@@ -38,7 +45,6 @@ class UpdateLogPage extends GetView<UpdateLogController> {
         appBar: showAppBar
             ? AppBar(
                 title: Text(TranslationKey.updateLogPageAppBarTitle.tr),
-                backgroundColor: currentTheme.colorScheme.inversePrimary,
               )
             : null,
         body: SafeArea(child: content),

@@ -137,25 +137,25 @@ class Global {
     void Function()? onCancel,
     void Function()? onNeutral,
     bool autoDismiss = true,
-    double maxWidth = double.maxFinite,
+    double maxWidth = 400,
   }) async {
     var cancelDisplay = false;
     late String md5;
-    await _dialogDisplayLock.synchronized((){
+    await _dialogDisplayLock.synchronized(() {
       md5 = CryptoUtil.toMD5("$title$text");
-      if(_displayingDialogs.contains(md5)){
+      if (_displayingDialogs.contains(md5)) {
         cancelDisplay = true;
       } else {
         _displayingDialogs.add(md5);
       }
     });
-    if(cancelDisplay){
+    if (cancelDisplay) {
       return null;
     }
     try {
       final appConfig = Get.find<ConfigService>();
       if (appConfig.authenticating.value) {
-        Log.warn(tag, "cancel show tips dialog because of authenticating");
+        logger.warn(tag, "cancel show tips dialog because of authenticating");
         return null;
       }
     } catch (_) {}
@@ -195,7 +195,11 @@ class Global {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  SingleChildScrollView(child: selectable ? SelectableText(text) : Text(text)),
+                  Flexible(
+                    child: SingleChildScrollView(
+                      child: selectable ? SelectableText(text) : Text(text),
+                    ),
+                  ),
                   ?customWidget,
                 ],
               ),
@@ -401,11 +405,11 @@ class DialogController {
     }
     try {
       if (dialog.key.currentContext == null) {
-        Log.debug(tag, "dialog($id) currentContext = null, wait 100ms");
+        logger.debug(tag, "dialog($id) currentContext = null, wait 100ms");
         await Future.delayed(100.ms);
       }
       if (dialog.key.currentContext == null) {
-        Log.debug(tag, "dialog.key.currentContext is null");
+        logger.debug(tag, "dialog.key.currentContext is null");
         _dialogKeyMap.remove(id);
         return false;
       }
@@ -419,7 +423,7 @@ class DialogController {
       }
       return true;
     } catch (err, stack) {
-      Log.error(tag, "$err,$stack");
+      logger.error(tag, "$err,$stack");
       return false;
     }
   }

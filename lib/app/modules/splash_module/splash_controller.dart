@@ -10,6 +10,8 @@ import 'package:clipshare/app/data/repository/entity/tables/operation_record.dar
 import 'package:clipshare/app/services/channels/multi_window_channel.dart';
 import 'package:clipshare/app/services/tray_service.dart';
 import 'package:clipshare/app/utils/extensions/number_extension.dart';
+import 'package:clipshare/app/utils/file_util.dart';
+import 'package:clipshare/app/utils/extensions/history_data_extension.dart';
 import 'package:clipshare_clipboard_listener/clipboard_manager.dart';
 import 'package:clipshare_clipboard_listener/enums.dart';
 import 'package:clipshare/app/data/enums/channelMethods/android_channel_method.dart';
@@ -41,6 +43,7 @@ import 'package:clipshare/app/utils/extensions/platform_extension.dart';
 import 'package:clipshare/app/utils/extensions/string_extension.dart';
 import 'package:clipshare/app/utils/global.dart';
 import 'package:clipshare/app/utils/log.dart';
+import 'package:clipshare/app/utils/windows_win_v_takeover.dart';
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:desktop_multi_window/desktop_multi_window.dart';
 import 'package:flutter/foundation.dart';
@@ -52,6 +55,7 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:share_handler/share_handler.dart';
 import 'package:uri_file_reader/uri_file_reader.dart';
 import 'package:window_manager/window_manager.dart';
+import 'package:path/path.dart' as p;
 /**
  * GetX Template Generator - fb.com/htngu.99
  * */
@@ -79,6 +83,7 @@ class SplashController extends GetxController {
           } else {
             Get.offNamed(Routes.HOME);
           }
+          _scheduleDetachedAndroidRouteFrame();
         })
         .catchError((err, stack) {
           Global.showTipsDialog(
@@ -89,16 +94,29 @@ class SplashController extends GetxController {
         });
   }
 
+  /// 服务无 Activity 拉起 Android 引擎时，规则迁移会让路由发生在初始预热帧结束后。
+  /// detached 生命周期不会调度普通帧，需要强制提交一次路由帧以创建目标页及其 Binding。
+  void _scheduleDetachedAndroidRouteFrame() {
+    final lifecycleState = WidgetsBinding.instance.lifecycleState;
+    if (!Platform.isAndroid || lifecycleState != AppLifecycleState.detached) {
+      return;
+    }
+    WidgetsBinding.instance.scheduleForcedFrame();
+  }
+
   Future<void> init() async {
+    // 先更新语言，确保后续下发给 Android 悬浮窗的文案已是最终 locale。
+    appConfig.updateLanguage();
     if (PlatformExt.isDesktop) {
       //加载配置后初始化窗体配置
       await initWindowsManager();
+      await initWinVTakeover();
       await initHotKey();
       initMultiWindowEvent();
       PackageInfo packageInfo = await PackageInfo.fromPlatform();
       launchAtStartup.setup(
         appName: packageInfo.appName,
-        appPath: Platform.resolvedExecutable,
+        appPath: PlatformExt.startupExecutablePath,
       );
       var isLaunchAtStartup = await launchAtStartup.isEnabled();
       final isSystem = isLaunchAtStartup;
@@ -119,24 +137,62 @@ class SplashController extends GetxController {
           isLaunchAtStartup = isLaunchAtStartup || hasShortcut;
         }
       }
-      Log.debug(tag, "isLaunchAtStartup  $isLaunchAtStartup, isSystem $isSystem");
+      logger.debug(tag, "isLaunchAtStartup  $isLaunchAtStartup, isSystem $isSystem");
       appConfig.setLaunchAtStartup(isLaunchAtStartup, isLaunchAtStartup && isSystem);
       var updateDir = Directory(appConfig.updateDownloadFileDirPath);
-      Log.debug(tag, "updateDir = $updateDir");
+      logger.debug(tag, "updateDir = $updateDir");
       if (await updateDir.exists()) {
         updateDir.delete(recursive: true);
       }
     }
     if (Platform.isAndroid) {
       androidChannelService.setAutoReportCrashes(appConfig.enableAutoUploadCrashLogs);
+      await copyAssets();
+      if (appConfig.showHistoryFloat) {
+        androidChannelService.showHistoryFloatWindow();
+      }
+      if (appConfig.enhanceBackgroundKeepAlive) {
+        androidChannelService.showKeepAliveFloatWindow();
+      }
+      androidChannelService.lockHistoryFloatLoc(
+        {"loc": appConfig.lockHistoryFloatLoc},
+      );
+    }
+    if (Platform.isIOS) {
+      if (appConfig.enablePIP) {
+        final tempPath = await FileUtil.copyAssetToTemp(Constants.iosPIPDefaultVideoPath);
+        final result = await clipboardManager.startPIP(tempPath);
+        logger.debug(tag, "start pip $result");
+      }
     }
     // 初始化channel
     initChannel();
     initShareHandler();
-    appConfig.updateLanguage();
+    if (Platform.isAndroid && appConfig.showHistoryFloat) {
+      // 语言更新与 channel 初始化完成后再补发一次，避免首次启动过早导致悬浮窗文案未刷新。
+      androidChannelService.showHistoryFloatWindow();
+    }
     // 初始化托盘服务（必须在语言初始化之后，以确保菜单项使用正确的翻译）
     if (PlatformExt.isDesktop) {
       await Get.putAsync(() => TrayService().init(), permanent: true);
+    }
+    await appConfig.migrateRules();
+  }
+
+  Future<void> copyAssets() async {
+    final luaFiles = ['dkjson.lua', 'task.lua'];
+    for (var fileName in luaFiles) {
+      try {
+        final newLuaPath = File(p.join(appConfig.luaLibDirPath, fileName));
+        await newLuaPath.parent.create(recursive: true);
+        final bytes = await rootBundle.load('assets/lua/$fileName');
+        await newLuaPath.writeAsBytes(
+          bytes.buffer.asUint8List(),
+          flush: true,
+        );
+      } catch (err, stack) {
+        logger.error(tag, err, stack);
+      }
     }
   }
 
@@ -151,10 +207,12 @@ class SplashController extends GetxController {
     );
     return windowManager.waitUntilReadyToShow(windowOptions, () async {
       if (!appConfig.startMini) {
+        //非最小化启动
         windowManager.show();
         windowManager.focus();
       } else if (Platform.isLinux) {
-        windowManager.hide();
+        //todo 待测试为什么要取消
+        // windowManager.hide();
       }
     });
   }
@@ -162,13 +220,32 @@ class SplashController extends GetxController {
   ///初始化快捷键
   initHotKey() async {
     await AppHotKeyHandler.unRegisterAll();
-    if (appConfig.historyWindowHotKeys.isNotEmpty) {
-      var hotKey = AppHotKeyHandler.toSystemHotKey(appConfig.historyWindowHotKeys);
+    final historyWindowHotKeys = appConfig.takeOverWinV ? Constants.winVHistoryWindowKeys : appConfig.historyWindowHotKeys;
+    if (historyWindowHotKeys.isNotEmpty) {
+      var hotKey = AppHotKeyHandler.toSystemHotKey(historyWindowHotKeys);
       AppHotKeyHandler.registerHistoryWindow(hotKey);
     }
     if (appConfig.syncFileHotKeys.isNotEmpty) {
       var hotKey = AppHotKeyHandler.toSystemHotKey(appConfig.syncFileHotKeys);
       AppHotKeyHandler.registerFileSync(hotKey);
+    }
+  }
+
+  ///初始化 Win+V 接管状态，并以系统 DisabledHotkeys 当前值同步应用设置。
+  Future<void> initWinVTakeover() async {
+    if (!Platform.isWindows) {
+      return;
+    }
+    final disabled = await isWinVDisabled();
+    if (disabled && !appConfig.takeOverWinV) {
+      await appConfig.setTakeOverWinV(true);
+      return;
+    }
+    if (!disabled && appConfig.takeOverWinV) {
+      final changed = await takeOverWinV();
+      if (changed) {
+        await restartExplorer();
+      }
     }
   }
 
@@ -192,7 +269,7 @@ class SplashController extends GetxController {
             max(fromId, 0),
           );
           var devMap = devService.toIdNameMap();
-          devMap[appConfig.devInfo.guid] = TranslationKey.selfDeviceName.tr;
+          devMap[appConfig.devInfo.guid] = appConfig.device.displayName;
           var res = {
             "list": lst,
             "devInfos": devMap,
@@ -210,19 +287,22 @@ class SplashController extends GetxController {
           //加载所有设备信息
           return jsonEncode(sourceService.appInfos);
         case MultiWindowMethod.copy:
-          int id = args["id"];
+          final id = args["id"];
           dbService.historyDao.getById(id).then(
             (history) async {
               if (history == null) return;
-              var type = ClipboardContentType.parse(history.type);
-              await clipboardManager.copy(type, history.content);
+              await history.copyContent();
               clipboardManager.pasteToPreviousWindow();
             },
           );
           break;
+        case MultiWindowMethod.copyContent:
+          final content = args["content"];
+          await clipboardManager.copy(ClipboardContentType.text, content);
+          break;
         case MultiWindowMethod.getCompatibleOnlineDevices:
           var devices = devController.compatibleOnlineDevices;
-          Log.info(tag, "devices $devices");
+          logger.info(tag, "devices $devices");
           return jsonEncode(devices);
         case MultiWindowMethod.syncFiles:
           final paths = (args["files"] as List<dynamic>).cast<String>();
@@ -232,8 +312,8 @@ class SplashController extends GetxController {
           for (var devMap in (args["devices"] as List<dynamic>)) {
             devices.add(Device.fromJson(devMap));
           }
-          Log.info(tag, "files $paths");
-          Log.info(tag, "devIds $devices");
+          logger.info(tag, "files $paths");
+          logger.info(tag, "devIds $devices");
           FileSyncHandler.sendFiles(
             devices: devices,
             files: files,
@@ -324,13 +404,11 @@ class SplashController extends GetxController {
           var historyDao = dbService.historyDao;
           var lst = List<History>.empty();
           if (fromId == 0) {
-            lst = await historyDao.getHistoriesTop100(appConfig.userId);
+            lst = await historyDao.getHistoriesTop100(appConfig.userId, Constants.historyFloatTypes);
           } else {
-            lst = await historyDao.getHistoriesPage(appConfig.userId, fromId);
+            lst = await historyDao.getHistoriesPage(appConfig.userId, fromId, Constants.historyFloatTypes);
           }
           var contentLst = lst
-              // 过滤掉非通知数据
-              .where((e) => !e.type.containsIgnoreCase(HistoryContentType.notification.name))
               .map(
                 (e) => {
                   "id": e.id,
@@ -355,6 +433,14 @@ class SplashController extends GetxController {
           case AndroidChannelMethod.onScreenClosed:
             ScreenOpenedListener.inst.notify(method);
             break;
+          case AndroidChannelMethod.onFileOpened:
+            final uri = call.arguments["uri"]?.toString();
+            if (uri.isBlank == true) {
+              logger.debug(tag, "ignore empty uri");
+              break;
+            }
+            await _handleIncomingUri(uri!);
+            break;
           case AndroidChannelMethod.onSmsChanged:
             final content = call.arguments["content"]!;
             HistoryDataListener.inst.onChanged(HistoryContentType.sms, content, null);
@@ -373,36 +459,52 @@ class SplashController extends GetxController {
     final handler = ShareHandlerPlatform.instance;
     appConfig.shareHandlerStream?.cancel();
     appConfig.shareHandlerStream = handler.sharedMediaStream.listen((SharedMedia media) async {
-      Log.info(tag, "ShareMedia: ${media.attachments}, content: ${media.content}");
-      if (media.attachments != null) {
-        var files = media.attachments!
-            .where((attachment) => attachment != null)
-            .map((attachment) => attachment!.path)
-            .map(
-              (f) => DropItemFile(f),
-            )
-            .toList();
-        Log.debug(tag, files);
-        if (files.isEmpty) {
-          return;
-        }
-        gotoOnlineDevicesPage(files);
-      } else if (media.content != null) {
-        final fileInfo = await uriFileReader.getFileInfoFromUri(media.content!);
-        if (fileInfo == null) {
-          Global.showSnackBarWarn(text: TranslationKey.failedToLoad.tr);
-          Log.debug(tag, "未从uri中获取到文件名称和大小：uri = ${media.content}");
-          return;
-        }
-        final fileName = fileInfo.fileName;
-        final size = fileInfo.size;
-        Log.info(tag, "ShareMedia fileName $fileName, size $size");
-        gotoOnlineDevicesPage([DropItemFileUri(media.content!, fileName, size)]);
-      } else {
-        Global.showTipsDialog(context: Get.context!, text: TranslationKey.saveFileNotSupportDialogText.tr);
-        return;
-      }
+      await _handleExternalSharedMedia(media);
     });
+  }
+
+  /// 将 share_handler 的分享事件与 Android 原生补偿上送的打开文件事件收敛到同一套处理逻辑。
+  Future<void> _handleExternalSharedMedia(SharedMedia media) async {
+    logger.info(tag, "ShareMedia: ${media.attachments}, content: ${media.content}");
+    final attachments = media.attachments;
+    if (attachments != null) {
+      final files = attachments
+          .where((attachment) => attachment != null)
+          .map((attachment) => attachment!.path)
+          .map((path) => DropItemFile(path))
+          .toList(growable: false);
+      await _handleIncomingDropItems(files);
+      return;
+    }
+    final content = media.content;
+    if (content.isNullOrBlank != true) {
+      await _handleIncomingUri(content!);
+      return;
+    }
+    Global.showTipsDialog(context: Get.context!, text: TranslationKey.saveFileNotSupportDialogText.tr);
+  }
+
+  /// 统一处理直接可落地为本地路径的外部文件集合。
+  Future<void> _handleIncomingDropItems(List<DropItem> files) async {
+    logger.debug(tag, files);
+    if (files.isEmpty) {
+      return;
+    }
+    gotoOnlineDevicesPage(files);
+  }
+
+  /// 统一处理以 Uri 形式进入应用的外部文件，并复用现有文件信息解析能力。
+  Future<void> _handleIncomingUri(String uri) async {
+    final fileInfo = await uriFileReader.getFileInfoFromUri(uri);
+    if (fileInfo == null) {
+      Global.showSnackBarWarn(text: TranslationKey.failedToLoad.tr);
+      logger.debug(tag, "未从uri中获取到文件名称和大小：uri = $uri");
+      return;
+    }
+    final fileName = fileInfo.fileName;
+    final size = fileInfo.size;
+    logger.info(tag, "ShareMedia fileName $fileName, size $size");
+    await _handleIncomingDropItems([DropItemFileUri(uri, fileName, size)]);
   }
 
   void gotoOnlineDevicesPage(List<DropItem> files) {

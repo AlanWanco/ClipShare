@@ -13,7 +13,6 @@ import 'package:clipshare/app/utils/extensions/number_extension.dart';
 import 'package:clipshare/app/utils/extensions/string_extension.dart';
 import 'package:clipshare/app/utils/extensions/time_extension.dart';
 import 'package:clipshare/app/utils/global.dart';
-import 'package:clipshare/app/widgets/app_icon.dart';
 import 'package:clipshare/app/widgets/app_info_groups_view.dart';
 import 'package:clipshare/app/widgets/base/tiny_segmented_control.dart';
 import 'package:clipshare/app/widgets/condition_widget.dart';
@@ -23,22 +22,36 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:get/get.dart';
-import 'package:material_design_icons_flutter/material_design_icons_flutter.dart';
+import 'package:flutter_material_design_icons/flutter_material_design_icons.dart';
 /**
  * GetX Template Generator - fb.com/htngu.99
  * */
 
 class CleanDataPage extends GetView<CleanDataController> {
+  final bool embedded;
+
+  CleanDataPage({
+    super.key,
+    this.embedded = false,
+  });
+
   final sourceService = Get.find<ClipboardSourceService>();
   final devService = Get.find<DeviceService>();
   final appConfig = Get.find<ConfigService>();
 
   @override
   Widget build(BuildContext context) {
-    final currentTheme = Theme.of(context);
     final appConfig = Get.find<ConfigService>();
     final dbService = Get.find<DbService>();
-    final showAppBar = appConfig.isSmallScreen;
+    final showAppBar = appConfig.isSmallScreen && !embedded;
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+
+    const sectionColor = Colors.blueGrey;
+    final chipSide = BorderSide(color: colorScheme.outlineVariant);
+    const chipLabelStyle = TextStyle(fontSize: 12);
+    final filterChipSelectedColor = colorScheme.primaryContainer;
+    final filterChipCheckmarkColor = colorScheme.onPrimaryContainer;
     final content = SingleChildScrollView(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -57,7 +70,7 @@ class CleanDataPage extends GetView<CleanDataController> {
                     children: [
                       const Icon(
                         Icons.filter_alt_rounded,
-                        color: Colors.blueGrey,
+                        color: sectionColor,
                         size: 20,
                       ),
                       const SizedBox(
@@ -68,7 +81,7 @@ class CleanDataPage extends GetView<CleanDataController> {
                         style: const TextStyle(
                           fontSize: 18,
                           fontWeight: FontWeight.bold,
-                          color: Colors.blueGrey,
+                          color: sectionColor,
                         ),
                       ),
                       IconButton(
@@ -78,7 +91,7 @@ class CleanDataPage extends GetView<CleanDataController> {
                         },
                         icon: const Icon(
                           Icons.info_outline,
-                          color: Colors.blueGrey,
+                          color: sectionColor,
                           size: 18,
                         ),
                       ),
@@ -92,7 +105,7 @@ class CleanDataPage extends GetView<CleanDataController> {
                     children: [
                       const Icon(
                         Icons.tag,
-                        color: Colors.blueGrey,
+                        color: sectionColor,
                         size: 16,
                       ),
                       const SizedBox(
@@ -100,7 +113,7 @@ class CleanDataPage extends GetView<CleanDataController> {
                       ),
                       Text(
                         TranslationKey.filterByTag.tr,
-                        style: const TextStyle(color: Colors.blueGrey),
+                        style: const TextStyle(color: sectionColor),
                       ),
                     ],
                   ),
@@ -134,6 +147,9 @@ class CleanDataPage extends GetView<CleanDataController> {
                                     }
                                   },
                                   selected: controller.selectedTags.contains(tag),
+                                  labelStyle: chipLabelStyle,
+                                  selectedColor: filterChipSelectedColor,
+                                  checkmarkColor: filterChipCheckmarkColor,
                                   label: Text(tag),
                                 ),
                               ),
@@ -150,7 +166,7 @@ class CleanDataPage extends GetView<CleanDataController> {
                     children: [
                       const Icon(
                         Icons.devices_outlined,
-                        color: Colors.blueGrey,
+                        color: sectionColor,
                         size: 16,
                       ),
                       const SizedBox(
@@ -158,7 +174,7 @@ class CleanDataPage extends GetView<CleanDataController> {
                       ),
                       Text(
                         TranslationKey.filterByDevice.tr,
-                        style: const TextStyle(color: Colors.blueGrey),
+                        style: const TextStyle(color: sectionColor),
                       ),
                     ],
                   ),
@@ -181,7 +197,10 @@ class CleanDataPage extends GetView<CleanDataController> {
                               }
                             },
                             selected: controller.selectedDevs.contains(dev.guid),
-                            label: Text(dev.name),
+                            labelStyle: chipLabelStyle,
+                            selectedColor: filterChipSelectedColor,
+                            checkmarkColor: filterChipCheckmarkColor,
+                            label: Text(dev.displayName),
                           ),
                         );
                       }).toList(),
@@ -196,9 +215,9 @@ class CleanDataPage extends GetView<CleanDataController> {
                       Expanded(
                         child: Row(
                           children: [
-                            Icon(
+                            const Icon(
                               MdiIcons.listBoxOutline,
-                              color: Colors.blueGrey,
+                              color: sectionColor,
                               size: 16,
                             ),
                             const SizedBox(
@@ -206,13 +225,14 @@ class CleanDataPage extends GetView<CleanDataController> {
                             ),
                             Text(
                               TranslationKey.filterBySource.tr,
-                              style: const TextStyle(color: Colors.blueGrey),
+                              style: const TextStyle(color: sectionColor),
                             ),
                           ],
                         ),
                       ),
                       RoundedChip(
-                        avatar: const Icon(Icons.add),
+                        avatar: const Icon(Icons.add, color: sectionColor),
+                        labelStyle: chipLabelStyle,
                         label: Text(TranslationKey.selection.tr),
                         onPressed: () {
                           final page = AppSelectionPage(
@@ -264,7 +284,7 @@ class CleanDataPage extends GetView<CleanDataController> {
                           children: [
                             const Icon(
                               Icons.date_range,
-                              color: Colors.blueGrey,
+                              color: sectionColor,
                               size: 16,
                             ),
                             const SizedBox(
@@ -272,14 +292,17 @@ class CleanDataPage extends GetView<CleanDataController> {
                             ),
                             Text(
                               TranslationKey.filterByDate.tr,
-                              style: const TextStyle(color: Colors.blueGrey),
+                              style: const TextStyle(color: sectionColor),
                             ),
                           ],
                         ),
                       ),
                       Obx(
                         () => RoundedChip(
+                          labelStyle: chipLabelStyle,
                           label: Text(TranslationKey.retainDays.tr),
+                          selectedColor: filterChipSelectedColor,
+                          checkmarkColor: filterChipCheckmarkColor,
                           onSelected: (selected) {
                             controller.useDaysFilter.value = selected;
                           },
@@ -304,11 +327,12 @@ class CleanDataPage extends GetView<CleanDataController> {
                                   () => Text(
                                     controller.startDate.value ?? TranslationKey.startDate.tr,
                                     style: const TextStyle(
-                                      color: Colors.blueGrey,
+                                      color: sectionColor,
                                     ),
                                   ),
                                 ),
-                                avatar: const Icon(Icons.date_range_outlined),
+                                avatar: const Icon(Icons.date_range_outlined, color: sectionColor),
+                                labelStyle: chipLabelStyle,
                                 deleteIcon: Obx(
                                   () => Visibility(
                                     visible: controller.startDate.value == null,
@@ -346,11 +370,12 @@ class CleanDataPage extends GetView<CleanDataController> {
                                   () => Text(
                                     controller.endDate.value ?? TranslationKey.endDate.tr,
                                     style: const TextStyle(
-                                      color: Colors.blueGrey,
+                                      color: sectionColor,
                                     ),
                                   ),
                                 ),
-                                avatar: const Icon(Icons.date_range_outlined),
+                                avatar: const Icon(Icons.date_range_outlined, color: sectionColor),
+                                labelStyle: chipLabelStyle,
                                 deleteIcon: Obx(
                                   () => Visibility(
                                     visible: controller.endDate.value == null,
@@ -408,7 +433,7 @@ class CleanDataPage extends GetView<CleanDataController> {
                     children: [
                       const Icon(
                         Icons.category,
-                        color: Colors.blueGrey,
+                        color: sectionColor,
                         size: 16,
                       ),
                       const SizedBox(
@@ -416,7 +441,7 @@ class CleanDataPage extends GetView<CleanDataController> {
                       ),
                       Text(
                         TranslationKey.filterByContentType.tr,
-                        style: const TextStyle(color: Colors.blueGrey),
+                        style: const TextStyle(color: sectionColor),
                       ),
                     ],
                   ),
@@ -446,7 +471,9 @@ class CleanDataPage extends GetView<CleanDataController> {
                                       controller.selectedContentTypes.add(type);
                                     }
                                   },
-                                  selectedColor: Theme.of(context).chipTheme.selectedColor,
+                                  labelStyle: chipLabelStyle,
+                                  selectedColor: theme.chipTheme.selectedColor ?? filterChipSelectedColor,
+                                  checkmarkColor: filterChipCheckmarkColor,
                                   label: Text(type.label),
                                 ),
                                 const SizedBox(
@@ -657,7 +684,7 @@ class CleanDataPage extends GetView<CleanDataController> {
                         children: [
                           const Icon(
                             Icons.timer,
-                            color: Colors.blueGrey,
+                            color: sectionColor,
                             size: 20,
                           ),
                           const SizedBox(
@@ -665,7 +692,7 @@ class CleanDataPage extends GetView<CleanDataController> {
                           ),
                           Text(
                             TranslationKey.autoCleanConfigTitle.tr,
-                            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.blueGrey),
+                            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: sectionColor),
                           ),
                         ],
                       ),
@@ -692,7 +719,7 @@ class CleanDataPage extends GetView<CleanDataController> {
                     children: [
                       const Icon(
                         Icons.equalizer_outlined,
-                        color: Colors.blueGrey,
+                        color: sectionColor,
                         size: 16,
                       ),
                       const SizedBox(
@@ -700,7 +727,7 @@ class CleanDataPage extends GetView<CleanDataController> {
                       ),
                       Text(
                         TranslationKey.autoCleanFrequency.tr,
-                        style: const TextStyle(color: Colors.blueGrey),
+                        style: const TextStyle(color: sectionColor),
                       ),
                     ],
                   ),
@@ -715,8 +742,10 @@ class CleanDataPage extends GetView<CleanDataController> {
                         controller.frequency.value = freq;
                         controller.updateNextExecTime();
                       },
-                      selectedColor: Colors.white,
-                      selectedBackgroundColor: Colors.blueGrey,
+                      backgroundColor: colorScheme.surfaceContainerHighest,
+                      selectedColor: colorScheme.onPrimaryContainer,
+                      selectedBackgroundColor: colorScheme.primaryContainer,
+                      unselectedColor: colorScheme.onSurfaceVariant,
                       contentPadding: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
                     );
                   }),
@@ -729,7 +758,7 @@ class CleanDataPage extends GetView<CleanDataController> {
                     children: [
                       const Icon(
                         Icons.timer,
-                        color: Colors.blueGrey,
+                        color: sectionColor,
                         size: 16,
                       ),
                       const SizedBox(
@@ -737,7 +766,7 @@ class CleanDataPage extends GetView<CleanDataController> {
                       ),
                       Text(
                         TranslationKey.execTime.tr,
-                        style: const TextStyle(color: Colors.blueGrey),
+                        style: const TextStyle(color: sectionColor),
                       ),
                     ],
                   ),
@@ -752,6 +781,8 @@ class CleanDataPage extends GetView<CleanDataController> {
                               visible: controller.frequency.value == CleanDataFreq.week,
                               child: RawChip(
                                 label: Text(controller.selectedWeekDay.value?.label ?? WeekDay.monday.label),
+                                labelStyle: chipLabelStyle,
+                                side: chipSide,
                                 onPressed: () {
                                   controller.showWeekDaySelectDialog();
                                 },
@@ -770,6 +801,8 @@ class CleanDataPage extends GetView<CleanDataController> {
                             ),
                             RawChip(
                               label: Text("${controller.selectedHour} h : ${controller.selectedMinute} min"),
+                              labelStyle: chipLabelStyle,
+                              side: chipSide,
                               onPressed: () {
                                 controller.showTimeSelectDialog();
                               },
@@ -788,7 +821,7 @@ class CleanDataPage extends GetView<CleanDataController> {
                             border: const OutlineInputBorder(),
                             suffixIcon: const Icon(
                               Icons.timer,
-                              color: Colors.blueGrey,
+                              color: sectionColor,
                             ),
                           ),
                           onChanged: (v) {
@@ -802,25 +835,35 @@ class CleanDataPage extends GetView<CleanDataController> {
                     () => Visibility(
                       visible: controller.nextExecTime.value != null,
                       replacement: Container(
-                        color: const Color(0xD4FBE7DC),
-                        child: Padding(
-                          padding: const EdgeInsets.all(12),
-                          child: Row(
-                            children: [Expanded(child: Text(TranslationKey.errorCronTips.tr))],
-                          ),
-                        ),
-                      ),
-                      child: Container(
-                        color: const Color(0xD4E9F3FF),
+                        color: colorScheme.errorContainer,
                         child: Padding(
                           padding: const EdgeInsets.all(12),
                           child: Row(
                             children: [
-                              Text(TranslationKey.nextExecTime.tr),
+                              Expanded(
+                                child: Text(
+                                  TranslationKey.errorCronTips.tr,
+                                  style: TextStyle(color: colorScheme.onErrorContainer),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      child: Container(
+                        color: colorScheme.primaryContainer,
+                        child: Padding(
+                          padding: const EdgeInsets.all(12),
+                          child: Row(
+                            children: [
+                              Text(
+                                TranslationKey.nextExecTime.tr,
+                                style: TextStyle(color: colorScheme.onPrimaryContainer),
+                              ),
                               Text(
                                 controller.nextExecTime.value ?? "",
-                                style: const TextStyle(
-                                  color: Colors.blueAccent,
+                                style: TextStyle(
+                                  color: colorScheme.onPrimaryContainer,
                                   fontWeight: FontWeight.bold,
                                 ),
                               ),
@@ -867,11 +910,14 @@ class CleanDataPage extends GetView<CleanDataController> {
         appBar: showAppBar
             ? AppBar(
                 title: Text(TranslationKey.cleanData.tr),
-                backgroundColor: currentTheme.colorScheme.inversePrimary,
               )
             : null,
         body: SafeArea(child: content),
       );
+    }
+    if (embedded) {
+      // 设置二级页面已经提供页面容器，这里只返回清理数据内容，避免重复嵌套页面壳。
+      return content;
     }
     return Card(
       color: Theme.of(context).cardTheme.color,

@@ -171,14 +171,23 @@ abstract class HistoryDao {
   Future<List<History>> getMissingHistory(String devId);
 
   ///获取前100条历史记录
-  @Query("select * from history where uid = :uid order by top desc,id desc limit 100")
-  Future<List<History>> getHistoriesTop100(int uid);
+  @Query("""
+    select * from history
+     where uid = :uid 
+      and (length(null in (:types)) = 1 or type in (:types))
+     order by top desc,id desc limit 100
+  """)
+  Future<List<History>> getHistoriesTop100(int uid, List<String> types);
 
   ///分页获取100条历史记录
-  @Query(
-    "select * from history where uid = :uid and (:fromId <= 0 or id < :fromId) order by top desc,id desc limit 100",
-  )
-  Future<List<History>> getHistoriesPage(int uid, int fromId);
+  @Query("""
+    select * from history 
+    where uid = :uid 
+      and (:fromId <= 0 or id < :fromId) 
+      and (length(null in (:types)) = 1 or type in (:types))
+    order by top desc,id desc limit 100
+    """)
+  Future<List<History>> getHistoriesPage(int uid, int fromId, List<String> types);
 
   ///置顶/取消置顶某记录
   @Query("update history set top = :top where id = :id ")
@@ -233,7 +242,7 @@ abstract class HistoryDao {
     final success = ((await dbService.historyTagDao.removeAllByHisId(id)) ?? 0) > 0;
     if (success && tags.isNotEmpty) {
       final tagIds = tags.map((item) => item.id).toList();
-      for(var tagId in tagIds) {
+      for (var tagId in tagIds) {
         await dbService.opRecordDao.deleteByDataWithCascade(tagId.toString());
       }
     }
@@ -287,7 +296,7 @@ abstract class HistoryDao {
     const sql = """
     select 
       devId,
-      (select devName from Device where guid = devId) as devName,
+      (select ifnull(nullif(customName, ''), devName) from Device where guid = devId) as devName,
       count(*) as cnt,
       strftime('%Y-%m', time) as month
     from history 
@@ -301,7 +310,7 @@ abstract class HistoryDao {
       [uid, startMonth, endMonth],
     );
     String selfId = appConfig.device.guid;
-    String selfName = appConfig.device.name;
+    String selfName = appConfig.device.displayName;
     int unknown = 0;
     return result.map((item) {
       String devName = item['devName']?.toString() ?? 'Unknown${++unknown}';

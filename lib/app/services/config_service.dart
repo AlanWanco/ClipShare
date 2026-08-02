@@ -3,23 +3,33 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:animated_theme_switcher/animated_theme_switcher.dart';
+import 'package:clipshare/app/data/enums/app_language.dart';
 import 'package:clipshare/app/data/enums/devicce_id_generate_way.dart';
 import 'package:clipshare/app/data/enums/device_paried_filter_status.dart';
 import 'package:clipshare/app/data/enums/forward_way.dart';
 import 'package:clipshare/app/data/enums/config_key.dart';
-import 'package:clipshare/app/data/enums/history_content_type.dart';
+import 'package:clipshare/app/data/enums/module.dart';
+import 'package:clipshare/app/data/enums/multi_window_config.dart';
+import 'package:clipshare/app/data/enums/op_method.dart';
+import 'package:clipshare/app/data/enums/rule/rule_content_type.dart';
+import 'package:clipshare/app/data/enums/rule/rule_script_language.dart';
+import 'package:clipshare/app/data/enums/rule/rule_trigger.dart';
+import 'package:clipshare/app/data/enums/support_platform.dart';
 import 'package:clipshare/app/data/enums/white_black_mode.dart';
 import 'package:clipshare/app/data/enums/window_type.dart';
+import 'package:clipshare/app/data/models/app_path_config.dart';
 import 'package:clipshare/app/data/models/storage/s3_config.dart';
 import 'package:clipshare/app/data/models/storage/web_dav_config.dart';
 import 'package:clipshare/app/data/models/white_black_rule.dart';
 import 'package:clipshare/app/data/repository/dao/config_dao.dart';
-import 'package:clipshare/app/handlers/storage/s3_client.dart';
+import 'package:clipshare/app/data/repository/dao/rule_dao.dart';
+import 'package:clipshare/app/data/repository/entity/tables/operation_record.dart';
+import 'package:clipshare/app/data/repository/entity/tables/rule.dart';
 import 'package:clipshare/app/handlers/sync/abstract_data_sender.dart';
+import 'package:clipshare/app/services/channels/multi_window_channel.dart';
 import 'package:clipshare/app/services/clipboard_service.dart';
-import 'package:clipshare/app/utils/extensions/number_extension.dart';
-import 'package:clipshare/app/utils/global.dart';
-import 'package:clipshare/app/utils/permission_helper.dart';
+import 'package:clipshare/app/services/tray_service.dart';
+import 'package:clipshare/app/utils/extensions/time_extension.dart';
 import 'package:clipshare_clipboard_listener/enums.dart';
 import 'package:clipshare/app/data/enums/translation_key.dart';
 import 'package:clipshare/app/data/models/clean_data_config.dart';
@@ -40,7 +50,6 @@ import 'package:clipshare/app/utils/extensions/string_extension.dart';
 import 'package:clipshare/app/utils/file_util.dart';
 import 'package:clipshare/app/utils/log.dart';
 import 'package:clipshare/app/utils/snowflake.dart';
-import 'package:clipshare_clipboard_listener/models/clipboard_source.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:desktop_multi_window/desktop_multi_window.dart';
 import 'package:device_info_plus/device_info_plus.dart';
@@ -48,19 +57,21 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:get/get.dart';
-import 'package:jieba_flutter/analysis/jieba_segmenter.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:permission_handler/permission_handler.dart';
 import 'package:persistent_device_id/persistent_device_id.dart';
 import 'package:share_handler/share_handler.dart';
 import 'package:window_manager/window_manager.dart';
 import 'package:no_screenshot/no_screenshot.dart';
+import 'package:path/path.dart' as p;
 
 final _noScreenshot = NoScreenshot.instance;
 
 class ConfigService extends GetxService {
+
   ConfigDao get configDao => Get.find<DbService>().configDao;
+
+  RuleDao get ruleDao => Get.find<DbService>().ruleDao;
   final tag = "ConfigService";
 
   //region 属性
@@ -93,13 +104,16 @@ class ConfigService extends GetxService {
   late final Snowflake snowflake;
   late final AppVersion version;
   late final double osVersion;
-  final minVersion = const AppVersion("1.0.0-beta", "3");
+  final minVersion = const AppVersion("1.5.0", "27");
 
   //路径
+  AppPathConfig? _customPathConfig;
   late final String androidPrivateDocumentPath;
   late final String androidPrivatePicturesPath;
+  late final String luaLibDirPath;
   late final String cachePath;
   late final String documentsPath;
+  late final String databasePath;
   late final String updateDownloadFileDirPath;
   late final String? windowsUserStartUpPath;
   late final String defaultFileStorePath;
@@ -113,8 +127,11 @@ class ConfigService extends GetxService {
 
   //region 应用内配置
 
-  //中转服务版本号
-  final forwardServerVersion = ''.obs;
+  //规则是否已迁移
+  bool _rulesMigrated = false;
+
+  //当前传输服务版本号，server 中转和 WS 通知服务二选一写入。
+  final transportServerVersion = ''.obs;
 
   //当前是否是深色模式
   bool get currentIsDarkMode {
@@ -174,9 +191,6 @@ class ConfigService extends GetxService {
   //本机是否启用 存储 进行中转
   bool get enableStorageSync => enableWebDAV || enableS3;
 
-  //jieba分词库是否已初始化
-  bool _jiebaInited = false;
-
   //设备连接时的df算法参数加密key
   String? _dhAesKey;
 
@@ -217,6 +231,23 @@ class ConfigService extends GetxService {
   late final RxBool _showHistoryFloat;
 
   bool get showHistoryFloat => _showHistoryFloat.value;
+
+  late final RxInt _historyFloatHandleWidth;
+
+  int get historyFloatHandleWidth => _historyFloatHandleWidth.value;
+
+  late final RxInt _historyFloatHandleColor;
+
+  int get historyFloatHandleColor => _historyFloatHandleColor.value;
+
+  // 控制把手装饰层是否跟随用户所选颜色的透明度。
+  late final RxBool _historyFloatHandleApplyAlphaToWholeHandle;
+
+  bool get historyFloatHandleApplyAlphaToWholeHandle => _historyFloatHandleApplyAlphaToWholeHandle.value;
+
+  late final RxBool _enhanceBackgroundKeepAlive;
+
+  bool get enhanceBackgroundKeepAlive => _enhanceBackgroundKeepAlive.value;
 
   //锁定悬浮窗位置
   late final RxBool _lockHistoryFloatLoc;
@@ -264,7 +295,7 @@ class ConfigService extends GetxService {
   bool get showOnRecentTasks => _showOnRecentTasks.value;
 
   //息屏一段时间后自动断连
-  final RxBool _autoCloseConnAfterScreenOff = true.obs;
+  final RxBool _autoCloseConnAfterScreenOff = false.obs;
 
   bool get autoCloseConnAfterScreenOff => _autoCloseConnAfterScreenOff.value;
 
@@ -277,6 +308,11 @@ class ConfigService extends GetxService {
   final RxBool _closeOnSameHotKey = false.obs;
 
   bool get closeOnSameHotKey => _closeOnSameHotKey.value;
+
+  //桌面端弹窗失去焦点时自动关闭
+  final RxBool _autoClosePopupOnBlur = false.obs;
+
+  bool get autoClosePopupOnBlur => _autoClosePopupOnBlur.value;
 
   //主题
   late final RxString _appTheme;
@@ -296,19 +332,9 @@ class ConfigService extends GetxService {
   }
 
   //语言
-  final RxString _language = 'auto'.obs;
+  final Rx<AppLanguage> _language = AppLanguage.auto.obs;
 
-  String get language => _language.value;
-
-  //标签规则
-  final _tagRules = Rx<String?>(null);
-
-  String get tagRules => _tagRules.value ?? Constants.defaultTagRules;
-
-  //短信规则
-  final _smsRules = Rx<String?>(null);
-
-  String get smsRules => _smsRules.value ?? Constants.defaultSmsRules;
+  AppLanguage get language => _language.value;
 
   //启用日志记录
   late final RxBool _enableLogsRecord;
@@ -354,6 +380,20 @@ class ConfigService extends GetxService {
 
   String get screenShotStorePath => "$rootStorePath/Screenshots".normalizePath;
 
+  //接收同步图片的自定义存储路径(当前仅Android)
+  late final RxString _imageStorePath;
+
+  ///获取 Android 接收同步图片时使用的存储路径，未自定义时使用应用私有目录。
+  String get imageStorePath {
+    if (!Platform.isAndroid) {
+      return _imageStorePath.value;
+    }
+    if (_imageStorePath.value.isEmpty) {
+      return androidPrivatePicturesPath;
+    }
+    return _imageStorePath.value;
+  }
+
   //保存至相册
   late final RxBool _saveToPictures;
 
@@ -378,11 +418,6 @@ class ConfigService extends GetxService {
   late final Rx<String?> _appPassword;
 
   String? get appPassword => _appPassword.value;
-
-  //是否启用短信同步
-  late final RxBool _enableSmsSync;
-
-  bool get enableSmsSync => _enableSmsSync.value;
 
   //是否启用中转服务
   late final RxBool _enableForward;
@@ -459,40 +494,20 @@ class ConfigService extends GetxService {
 
   bool get autoSyncMissingData => _autoSyncMissingData.value;
 
-  //黑名单功能
-  final _enableContentBlackList = false.obs;
-
-  bool get enableContentBlackList => _enableContentBlackList.value;
-
-  //黑名单列表
-  final _contentBlackList = <FilterRule>[].obs;
-
-  List<FilterRule> get contentBlackList => _contentBlackList.value;
-
   //启用通知记录
   final _enableRecordNotification = false.obs;
 
   bool get enableRecordNotification => _enableRecordNotification.value;
 
-  //通知黑白名单模式
-  final _currentNotificationWhiteBlackMode = WhiteBlackMode.black.obs;
-
-  WhiteBlackMode get currentNotificationWhiteBlackMode => _currentNotificationWhiteBlackMode.value;
-
-  //通知黑名单列表
-  final _notificationBlackList = <FilterRule>[].obs;
-
-  List<FilterRule> get notificationBlackList => _notificationBlackList.value;
-
-  //通知白名单列表
-  final _notificationWhiteList = <FilterRule>[].obs;
-
-  List<FilterRule> get notificationWhiteList => _notificationWhiteList.value;
-
   //显示移动设备的通知
   final _enableShowMobileNotification = false.obs;
 
   bool get enableShowMobileNotification => _enableShowMobileNotification.value;
+
+  //桌面端接收文件后发起通知
+  final _notifyOnReceivedFile = false.obs;
+
+  bool get notifyOnReceivedFile => _notifyOnReceivedFile.value;
 
   //webdav配置
   final _webdavConfig = Rx<WebDAVConfig?>(null);
@@ -560,7 +575,7 @@ class ConfigService extends GetxService {
   ];
 
   ///仅手动子网扫描发现设备
-  final _onlyManualDiscoverySubNet = false.obs;
+  final _onlyManualDiscoverySubNet = true.obs;
 
   bool get onlyManualDiscoverySubNet => _onlyManualDiscoverySubNet.value;
 
@@ -568,6 +583,11 @@ class ConfigService extends GetxService {
   final _stopListeningOnScreenClosed = false.obs;
 
   bool get stopListeningOnScreenClosed => _stopListeningOnScreenClosed.value;
+
+  ///网络切换时尽量保留现有连接，避免在无需重连的场景主动断开。
+  final _keepConnectionsOnNetworkSwitch = true.obs;
+
+  bool get keepConnectionsOnNetworkSwitch => _keepConnectionsOnNetworkSwitch.value;
 
   ///当有新数据时发送广播通知
   final _sendBroadcastOnAdd = false.obs;
@@ -583,6 +603,11 @@ class ConfigService extends GetxService {
   final _excludeFormat = true.obs;
 
   bool get isExcludeFormat => _excludeFormat.value;
+
+  ///IOS 启用画中画，启用后可后台监听剪贴板
+  final _enablePIP = false.obs;
+
+  bool get enablePIP => _enablePIP.value;
 
   ///是否记录弹窗大小
   final _rememberPopupWindowSize = false.obs;
@@ -604,6 +629,21 @@ class ConfigService extends GetxService {
 
   bool get useTrayFlashingForConnection => _useTrayFlashingForConnection.value;
 
+  ///记录的最大长度
+  final _recordMaxLength = 0.obs;
+
+  int get recordMaxLength => _recordMaxLength.value;
+
+  ///Windows 是否接管 Win+V 打开历史弹窗。
+  final _takeOverWinV = false.obs;
+
+  bool get takeOverWinV => _takeOverWinV.value;
+
+  ///Windows 正常退出程序时是否自动恢复系统 Win+V。
+  final _restoreWinVOnExit = true.obs;
+
+  bool get restoreWinVOnExit => _restoreWinVOnExit.value;
+
   //endregion
 
   //endregion
@@ -616,7 +656,6 @@ class ConfigService extends GetxService {
     await loadConfigs();
     await initDeviceInfo();
     snowflake = Snowflake(device.guid.hashCode);
-    setSystemUIOverlayAutoStyle();
     return this;
   }
 
@@ -628,6 +667,16 @@ class ConfigService extends GetxService {
     _startMini = (await cfg.getConfigByKey(ConfigKey.startMini, false)).obs;
     _allowDiscover = (await cfg.getConfigByKey(ConfigKey.allowDiscover, true)).obs;
     _showHistoryFloat = (await cfg.getConfigByKey(ConfigKey.showHistoryFloat, false)).obs;
+    _historyFloatHandleWidth = (await cfg.getConfigByKey(ConfigKey.historyFloatHandleWidth, 32)).obs;
+    _historyFloatHandleColor = (await cfg.getConfigByKey(
+      ConfigKey.historyFloatHandleColor,
+      Constants.defaultHistoryFloatHandleColor,
+    )).obs;
+    _historyFloatHandleApplyAlphaToWholeHandle = (await cfg.getConfigByKey(
+      ConfigKey.historyFloatHandleApplyAlphaToWholeHandle,
+      false,
+    )).obs;
+    _enhanceBackgroundKeepAlive = (await cfg.getConfigByKey(ConfigKey.enhanceBackgroundKeepAlive, false)).obs;
     _firstStartup = (await cfg.getConfigByKey(ConfigKey.firstStartup, true)).obs;
     _rememberWindowSize = (await cfg.getConfigByKey(ConfigKey.rememberWindowSize, false)).obs;
     _windowSize = (await cfg.getConfigByKey(
@@ -643,24 +692,26 @@ class ConfigService extends GetxService {
     _lockHistoryFloatLoc = (await cfg.getConfigByKey(ConfigKey.lockHistoryFloatLoc, true)).obs;
     _enableLogsRecord = (await cfg.getConfigByKey(ConfigKey.enableLogsRecord, false)).obs;
     _enableAutoUploadCrashLogs = (await cfg.getConfigByKey(ConfigKey.enableAutoUploadCrashLogs, false)).obs;
-    _tagRules.value = (await cfg.getConfigByKey<String?>(ConfigKey.tagRules, null));
-    _smsRules.value = (await cfg.getConfigByKey<String?>(ConfigKey.smsRules, null));
     _historyWindowHotKeys = (await cfg.getConfigByKey(ConfigKey.historyWindowHotKeys, Constants.defaultHistoryWindowKeys)).obs;
     _syncFileHotKeys = (await cfg.getConfigByKey(ConfigKey.syncFileHotKeys, Constants.defaultSyncFileHotKeys)).obs;
     _showMainWindowHotKeys = (await cfg.getConfigByKey(ConfigKey.showMainWindowHotKeys, "")).obs;
     _exitAppHotKeys = (await cfg.getConfigByKey(ConfigKey.exitAppHotKeys, "")).obs;
     _heartbeatInterval = (await cfg.getConfigByKey(ConfigKey.heartbeatInterval, Constants.heartbeatInterval)).obs;
-    _fileStorePath = (await cfg.getConfigByKey(
-      ConfigKey.fileStorePath,
-      defaultFileStorePath,
-      convert: (value) => Directory(fileStorePath).absolute.normalizePath,
-    )).obs;
+    if (_customPathConfig?.fileStorePath == null) {
+      _fileStorePath = (await cfg.getConfigByKey(
+        ConfigKey.fileStorePath,
+        defaultFileStorePath,
+        convert: (value) => Directory(fileStorePath).absolute.normalizePath,
+      )).obs;
+    } else {
+      _fileStorePath = defaultFileStorePath.obs;
+    }
     _saveToPictures = (await cfg.getConfigByKey(ConfigKey.saveToPictures, false)).obs;
+    _imageStorePath = (await cfg.getConfigByKey(ConfigKey.imageStorePath, '')).obs;
     _ignoreShizuku = (await cfg.getConfigByKey(ConfigKey.ignoreShizuku, false)).obs;
     _useAuthentication = (await cfg.getConfigByKey(ConfigKey.useAuthentication, false)).obs;
     _appRevalidateDuration = (await cfg.getConfigByKey(ConfigKey.appRevalidateDuration, 0)).obs;
     _appPassword = (await cfg.getConfigByKey<String?>(ConfigKey.appPassword, null)).obs;
-    _enableSmsSync = (await cfg.getConfigByKey(ConfigKey.enableSmsSync, false)).obs;
     _enableForward = (await cfg.getConfigByKey(ConfigKey.enableForward, false)).obs;
     _notificationServer.value = await cfg.getConfigByKey<String>(ConfigKey.notificationServer, Constants.defaultNotificationServer);
     _forwardWay.value = await cfg.getConfigByKey<ForwardWay>(
@@ -714,11 +765,16 @@ class ConfigService extends GetxService {
     _autoCopyImageAfterSync = (await cfg.getConfigByKey(ConfigKey.autoCopyImageAfterSync, false)).obs;
     _autoCopyImageAfterScreenShot = (await cfg.getConfigByKey(ConfigKey.autoCopyImageAfterScreenShot, true)).obs;
     _ignoreUpdateVersion.value = (await cfg.getConfigByKey<String?>(ConfigKey.ignoreUpdateVersion, null));
-    _language.value = (await cfg.getConfigByKey(ConfigKey.appLanguage, 'auto'));
+    _language.value = AppLanguage.fromStorageValue(
+      await cfg.getConfigByKey(
+        ConfigKey.appLanguage,
+        AppLanguage.auto.storageValue,
+      ),
+    );
     _recordHistoryDialogPosition.value = (await cfg.getConfigByKey(ConfigKey.recordHistoryDialogPosition, false));
     _historyDialogPosition.value = (await cfg.getConfigByKey(ConfigKey.historyDialogPosition, ""));
     _showOnRecentTasks.value = await cfg.getConfigByKey(ConfigKey.showOnRecentTasks, true);
-    _autoCloseConnAfterScreenOff.value = (await cfg.getConfigByKey(ConfigKey.autoCloseConnAfterScreenOff, true));
+    _autoCloseConnAfterScreenOff.value = (await cfg.getConfigByKey(ConfigKey.autoCloseConnAfterScreenOff, false));
     _cleanDataConfig.value = (await cfg.getConfigByKey<CleanDataConfig?>(
       ConfigKey.cleanDataConfig,
       null,
@@ -745,40 +801,9 @@ class ConfigService extends GetxService {
     _notifyOnDevDisconn.value = (await cfg.getConfigByKey(ConfigKey.notifyOnDevDisconn, true));
     _notifyOnDevConn.value = (await cfg.getConfigByKey(ConfigKey.notifyOnDevConn, true));
     _autoSyncMissingData.value = (await cfg.getConfigByKey(ConfigKey.autoSyncMissingData, true));
-    _enableContentBlackList.value = (await cfg.getConfigByKey(ConfigKey.enableContentBlackList, false));
-    _contentBlackList.value = (await cfg.getConfigByKey(
-      ConfigKey.blacklist,
-      [],
-      convert: (value) {
-        try {
-          List<Map<String, dynamic>> jsonList = (jsonDecode(value) as List<dynamic>).cast();
-          return jsonList.map((item) => FilterRule.fromJson(item)).toList();
-        } catch (err, stack) {
-          debugPrint(err.toString());
-          debugPrintStack(stackTrace: stack);
-          return [];
-        }
-      },
-    ));
     _enableRecordNotification.value = (await cfg.getConfigByKey(ConfigKey.enableRecordNotification, false));
     _enableShowMobileNotification.value = (await cfg.getConfigByKey(ConfigKey.enableShowMobileNotification, false));
-    final notificationBlackWhiteList = await cfg.getConfigByKey(ConfigKey.notificationBlackWhiteList, "");
-    try {
-      if (notificationBlackWhiteList.isNullOrEmpty) {
-        _notificationWhiteList.value = [];
-        _notificationBlackList.value = [];
-      } else {
-        final map = jsonDecode(notificationBlackWhiteList) as Map<String, dynamic>;
-        _currentNotificationWhiteBlackMode.value = WhiteBlackMode.values.byName(map["mode"].toString());
-        _notificationBlackList.value = (map["blacklist"]! as List<dynamic>).map((item) => FilterRule.fromJson(item)).toList();
-        _notificationWhiteList.value = (map["whitelist"]! as List<dynamic>).map((item) => FilterRule.fromJson(item)).toList();
-      }
-    } catch (err, stack) {
-      debugPrint(err.toString());
-      debugPrintStack(stackTrace: stack);
-      _notificationWhiteList.value = [];
-      _notificationBlackList.value = [];
-    }
+    _notifyOnReceivedFile.value = (await cfg.getConfigByKey(ConfigKey.notifyOnReceivedFile, false));
     _webdavConfig.value = (await cfg.getConfigByKey(
       ConfigKey.webdavConfig,
       null,
@@ -808,12 +833,15 @@ class ConfigService extends GetxService {
       [],
       convert: (content) => content.split(',').where(((item) => item.isNotEmpty)).toList(),
     );
-    _onlyManualDiscoverySubNet.value = await cfg.getConfigByKey(ConfigKey.onlyManualDiscoverySubNet, false);
+    _onlyManualDiscoverySubNet.value = await cfg.getConfigByKey(ConfigKey.onlyManualDiscoverySubNet, true);
     _stopListeningOnScreenClosed.value = await cfg.getConfigByKey(ConfigKey.stopListeningOnScreenClosed, false);
+    _keepConnectionsOnNetworkSwitch.value = await cfg.getConfigByKey(ConfigKey.keepConnectionsOnNetworkSwitch, true);
     _sendBroadcastOnAdd.value = await cfg.getConfigByKey(ConfigKey.sendBroadcastOnAdd, false);
     _recopyOnScreenUnlocked.value = await cfg.getConfigByKey(ConfigKey.recopyOnScreenUnlocked, false);
     _excludeFormat.value = await cfg.getConfigByKey(ConfigKey.excludeFormat, true);
+    _enablePIP.value = await cfg.getConfigByKey(ConfigKey.enablePIP, false);
     _rememberPopupWindowSize.value = await cfg.getConfigByKey(ConfigKey.rememberPopupWindowSize, false);
+    _autoClosePopupOnBlur.value = await cfg.getConfigByKey(ConfigKey.autoClosePopupOnBlur, false);
     _historyWindowSize.value = await cfg.getConfigByKey(
       ConfigKey.historyWindowSize,
       null,
@@ -841,10 +869,29 @@ class ConfigService extends GetxService {
       },
     );
     _useTrayFlashingForConnection.value = await cfg.getConfigByKey(ConfigKey.useTrayFlashingForConnection, false);
+    _recordMaxLength.value = await cfg.getConfigByKey(ConfigKey.recordMaxLength, 200_000);
+    _takeOverWinV.value = await cfg.getConfigByKey(ConfigKey.takeOverWinV, false);
+    _restoreWinVOnExit.value = await cfg.getConfigByKey(ConfigKey.restoreWinVOnExit, true);
   }
 
   ///初始化路径信息
   Future<void> initPath() async {
+    final customPathConfig = await _readPathConfig();
+    _customPathConfig = customPathConfig;
+    await _initLuaLibDirPath();
+    await _initDocumentsPath();
+    await _initCachePath();
+    await _initLogsDirPath();
+    await _initFileStorePath(customPathConfig);
+    await _initDatabasePath(customPathConfig);
+    _initWindowsStartupPath();
+    _initUpdateDownloadPath();
+    try {
+      await Directory(documentsPath).create(recursive: true);
+    } catch (_) {}
+  }
+
+  Future<void> _initDocumentsPath() async {
     if (Platform.isAndroid) {
       // /storage/emulated/0/Android/data/top.coclyun.clipshare/files/documents
       androidPrivateDocumentPath = (await getExternalStorageDirectories(
@@ -854,32 +901,113 @@ class ConfigService extends GetxService {
       androidPrivatePicturesPath = (await getExternalStorageDirectories(
         type: StorageDirectory.pictures,
       ))![0].path;
-      // /storage/emulated/0/Android/data/top.coclyun.clipshare/cache
-      cachePath = (await getExternalCacheDirectories())![0].path;
       documentsPath = "${Constants.androidDocumentsPath}/ClipShare/";
+    } else {
+      documentsPath = "${(await getApplicationDocumentsDirectory()).path}/ClipShare/";
+    }
+  }
+
+  Future<void> _initLuaLibDirPath() async {
+    final execDirPath = File(Platform.resolvedExecutable).parent.absolute.path;
+    if (Platform.isMacOS) {
+      luaLibDirPath = p.join(
+          execDirPath,           // .../Contents/MacOS
+          '..',                  // 回到 Contents/
+          'Frameworks',
+          'App.framework',
+          'Resources',           // Contents/Frameworks/App.framework/Resources
+          'flutter_assets',
+          'assets',
+          'lua'
+      );
+    } else if (Platform.isIOS) {
+      luaLibDirPath = p.join(execDirPath, "Frameworks", "App.framework", "flutter_assets", "assets", "lua");
+    } else if (Platform.isAndroid) {
+      final filesPath = await getExternalStorageDirectory();
+      luaLibDirPath = p.join(filesPath!.path, "lua");
+    } else {
+      luaLibDirPath = p.join(execDirPath, "data", "flutter_assets", "assets", "lua");
+    }
+  }
+
+  void _initUpdateDownloadPath() {
+    if (Platform.isAndroid) {
       updateDownloadFileDirPath = Constants.androidDownloadPath;
     } else {
-      cachePath = (await getApplicationCacheDirectory()).path;
-      documentsPath = "${(await getApplicationDocumentsDirectory()).path}/ClipShare/";
       updateDownloadFileDirPath = "$documentsPath/update";
-      if (Platform.isWindows) {
-        final username = Platform.environment['USERNAME'];
-        if (username == null) {
-          windowsUserStartUpPath = null;
-        } else {
-          windowsUserStartUpPath = r'C:\Users\' + username + r'\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup';
-        }
+    }
+  }
+
+  Future<void> _initCachePath() async {
+    if (Platform.isAndroid) {
+      // /storage/emulated/0/Android/data/top.coclyun.clipshare/cache
+      cachePath = (await getExternalCacheDirectories())![0].path;
+    } else {
+      cachePath = (await getApplicationCacheDirectory()).path;
+    }
+  }
+
+  void _initWindowsStartupPath() {
+    if (Platform.isWindows) {
+      final username = Platform.environment['USERNAME'];
+      if (username == null) {
+        windowsUserStartUpPath = null;
+      } else {
+        windowsUserStartUpPath = r'C:\Users\' + username + r'\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup';
       }
     }
+  }
+
+  Future<AppPathConfig> _readPathConfig() async {
+    String? fileStorePath;
+    String? databasePath;
+    //读取本地文件的路径配置
     try {
-      await Directory(documentsPath).create(recursive: true);
-    } catch (_) {}
-    await _initLogsDirPath();
-    await _initDefaultFileStorePath();
+      final file = File("custom_path.json");
+      if (await file.exists()) {
+        final content = await file.readAsString();
+        final config = AppPathConfig.fromJson(jsonDecode(content));
+        fileStorePath = config.fileStorePath;
+        databasePath = config.databasePath;
+      }
+    } catch (_) {
+      //ignored
+    }
+    //读取环境变量中的路径配置
+    var envFileStorePath = Platform.environment['CLIPSHARE_FILE_STORE_PATH'];
+    var envDatabasePath = Platform.environment['CLIPSHARE_DATABASE_PATH'];
+    //环境变量优先
+    if (envFileStorePath != null) {
+      fileStorePath = envFileStorePath;
+    }
+    if (envDatabasePath != null) {
+      databasePath = envDatabasePath;
+    }
+    if (fileStorePath != null) {
+      try{
+        await Directory(fileStorePath).create(recursive: true);
+      }catch(err, stack){
+        fileStorePath = null;
+        logger.error(tag, err, stack);
+      }
+    }
+    if (databasePath != null) {
+      try{
+        await Directory(databasePath).create(recursive: true);
+      }catch(err, stack){
+        databasePath = null;
+        logger.error(tag, err, stack);
+      }
+    }
+    return AppPathConfig(fileStorePath: fileStorePath, databasePath: databasePath);
   }
 
   ///文件默认存储路径
-  Future<void> _initDefaultFileStorePath() async {
+  Future<void> _initFileStorePath(AppPathConfig custom) async {
+    if(custom.fileStorePath != null){
+      defaultFileStorePath = custom.fileStorePath!;
+      return;
+    }
     late String path;
     if (Platform.isAndroid) {
       path = "${Constants.androidDownloadPath}/${Constants.appName}";
@@ -900,9 +1028,32 @@ class ConfigService extends GetxService {
         dir.createSync(recursive: true);
       }
     } catch (err, stack) {
-      Log.error(tag, err, stack);
+      logger.error(tag, err, stack);
     }
     defaultFileStorePath = Directory(path).normalizePath;
+  }
+
+  ///数据库路径
+  Future<void> _initDatabasePath(AppPathConfig custom) async {
+    if(custom.databasePath != null){
+      databasePath = custom.databasePath!;
+      return;
+    }
+    //桌面端如果当前路径可写则使用当前路径，如开发环境或者便携版本
+    if (PlatformExt.isDesktop) {
+      if (Platform.isMacOS) {
+        databasePath = documentsPath;
+      } else {
+        var dirPath = Directory(Platform.resolvedExecutable).parent.path;
+        if (FileUtil.testWriteable(dirPath)) {
+          databasePath = dirPath;
+        } else {
+          databasePath = documentsPath;
+        }
+      }
+      return;
+    }
+    databasePath = "";
   }
 
   ///初始化日志路径
@@ -980,6 +1131,12 @@ class ConfigService extends GetxService {
       guid = CryptoUtil.toMD5(macosInfo.systemGUID!);
       name = macosInfo.computerName;
       type = "Mac";
+    } else if (Platform.isIOS) {
+      var iosInfo = await deviceInfo.iosInfo;
+      var id = await PersistentDeviceId.getDeviceId();
+      guid = CryptoUtil.toMD5(id!);
+      name = iosInfo.name;
+      type = "IOS";
     } else {
       throw Exception("Not Support Platform");
     }
@@ -998,10 +1155,12 @@ class ConfigService extends GetxService {
     device = Device(
       guid: guid,
       devName: name,
+      // ConfigService 初始化早于 i18n，不能在这里使用 .tr；展示层再按当前语言本地化。
       customName: "本机",
       uid: 0,
       type: type,
     );
+    Device.initializeSelfGuid(device.guid);
   }
 
   //endregion
@@ -1019,7 +1178,7 @@ class ConfigService extends GetxService {
 
   Future<void> setLaunchAtStartup(bool launchAtStartup, [bool deleteWindowsShortcut = false]) async {
     _launchAtStartup.value = launchAtStartup;
-    Log.debug(tag, "launchAtStartup $launchAtStartup, deleteWindowsShortcut $deleteWindowsShortcut");
+    logger.debug(tag, "launchAtStartup $launchAtStartup, deleteWindowsShortcut $deleteWindowsShortcut");
     if (launchAtStartup && !deleteWindowsShortcut) return;
     if (Platform.isWindows) {
       final startupPaths = <String>[
@@ -1055,6 +1214,30 @@ class ConfigService extends GetxService {
     _showHistoryFloat.value = showHistoryFloat;
   }
 
+  Future<void> setHistoryFloatHandleWidth(int width) async {
+    await configDao.addOrUpdate(ConfigKey.historyFloatHandleWidth, width.toString());
+    _historyFloatHandleWidth.value = width;
+  }
+
+  Future<void> setHistoryFloatHandleColor(int color) async {
+    await configDao.addOrUpdate(ConfigKey.historyFloatHandleColor, color.toString());
+    _historyFloatHandleColor.value = color;
+  }
+
+  /// 设置是否将把手颜色透明度扩展到整个把手装饰层。
+  Future<void> setHistoryFloatHandleApplyAlphaToWholeHandle(bool value) async {
+    await configDao.addOrUpdate(
+      ConfigKey.historyFloatHandleApplyAlphaToWholeHandle,
+      value.toString(),
+    );
+    _historyFloatHandleApplyAlphaToWholeHandle.value = value;
+  }
+
+  Future<void> setEnhanceBackgroundKeepAlive(bool value) async {
+    await configDao.addOrUpdate(ConfigKey.enhanceBackgroundKeepAlive, value.toString());
+    _enhanceBackgroundKeepAlive.value = value;
+  }
+
   Future<void> setLockHistoryFloatLoc(bool lockHistoryFloatLoc) async {
     await configDao.addOrUpdate(ConfigKey.lockHistoryFloatLoc, lockHistoryFloatLoc.toString());
     _lockHistoryFloatLoc.value = lockHistoryFloatLoc;
@@ -1078,9 +1261,7 @@ class ConfigService extends GetxService {
     _windowSize.value = size;
   }
 
-  Future<void> setRecordHistoryDialogPosition(
-    bool recordHistoryDialogPosition,
-  ) async {
+  Future<void> setRecordHistoryDialogPosition(bool recordHistoryDialogPosition) async {
     await configDao.addOrUpdate(ConfigKey.recordHistoryDialogPosition, recordHistoryDialogPosition.toString());
     _recordHistoryDialogPosition.value = recordHistoryDialogPosition;
   }
@@ -1113,20 +1294,6 @@ class ConfigService extends GetxService {
     _enableAutoUploadCrashLogs.value = enableAutoUploadCrashLogs;
   }
 
-  Future<void> setTagRules(String tagRules) async {
-    await configDao.addOrUpdate(ConfigKey.tagRules, tagRules.toString());
-    _tagRules.value = tagRules;
-  }
-
-  Future<void> setSmsRules(String smsRules) async {
-    await configDao.addOrUpdate(ConfigKey.smsRules, smsRules);
-    if (_smsRules.value == null) {
-      _smsRules.value = smsRules;
-    } else {
-      _smsRules!.value = smsRules;
-    }
-  }
-
   Future<void> setHistoryWindowHotKeys(String historyWindowHotKeys) async {
     await configDao.addOrUpdate(ConfigKey.historyWindowHotKeys, historyWindowHotKeys);
     _historyWindowHotKeys.value = historyWindowHotKeys;
@@ -1155,6 +1322,12 @@ class ConfigService extends GetxService {
   Future<void> setFileStorePath(String fileStorePath) async {
     await configDao.addOrUpdate(ConfigKey.fileStorePath, fileStorePath);
     _fileStorePath.value = fileStorePath;
+  }
+
+  ///持久化 Android 接收同步图片的自定义存储目录。
+  Future<void> setImageStorePath(String imageStorePath) async {
+    await configDao.addOrUpdate(ConfigKey.imageStorePath, imageStorePath);
+    _imageStorePath.value = imageStorePath;
   }
 
   Future<void> setSaveToPictures(bool saveToPictures) async {
@@ -1190,11 +1363,6 @@ class ConfigService extends GetxService {
     _appPassword.value = appPassword;
   }
 
-  Future<void> setEnableSmsSync(bool enableSmsSync) async {
-    await configDao.addOrUpdate(ConfigKey.enableSmsSync, enableSmsSync.toString());
-    _enableSmsSync.value = enableSmsSync;
-  }
-
   Future<void> setEnableForward(bool enableForward) async {
     await configDao.addOrUpdate(ConfigKey.enableForward, enableForward.toString());
     _enableForward.value = enableForward;
@@ -1226,9 +1394,7 @@ class ConfigService extends GetxService {
     _autoCopyImageAfterSync.value = autoCopyImageAfterSync;
   }
 
-  Future<void> setAutoCopyImageAfterScreenShot(
-    bool autoCopyImageAfterScreenShot,
-  ) async {
+  Future<void> setAutoCopyImageAfterScreenShot(bool autoCopyImageAfterScreenShot) async {
     await configDao.addOrUpdate(
       ConfigKey.autoCopyImageAfterScreenShot,
       autoCopyImageAfterScreenShot.toString(),
@@ -1242,19 +1408,24 @@ class ConfigService extends GetxService {
     VoidCallback? onAnimationFinish,
   ]) async {
     await configDao.addOrUpdate(ConfigKey.appTheme, appTheme.name);
-    updateAppTheme(context, appTheme, updateConfig: true, onAnimationFinish: onAnimationFinish,);
+    updateAppTheme(
+      context,
+      appTheme,
+      updateConfig: true,
+      onAnimationFinish: onAnimationFinish,
+    );
   }
 
   void updateAppTheme(
     BuildContext context,
     ThemeMode themeMode, {
-      bool updateConfig = false,
-      VoidCallback? onAnimationFinish,
+    bool updateConfig = false,
+    VoidCallback? onAnimationFinish,
   }) {
     late final bool isDarkTheme;
     if (themeMode == ThemeMode.system) {
       isDarkTheme = Get.isPlatformDarkMode;
-    }else{
+    } else {
       isDarkTheme = themeMode == ThemeMode.dark;
     }
     ThemeSwitcher.of(context).changeTheme(
@@ -1263,7 +1434,7 @@ class ConfigService extends GetxService {
       onAnimationFinish: onAnimationFinish,
     );
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if(updateConfig) {
+      if (updateConfig) {
         _appTheme.value = themeMode.name;
       }
       if (isDarkTheme) {
@@ -1272,6 +1443,8 @@ class ConfigService extends GetxService {
         setSystemUIOverlayLightStyle();
       }
     });
+    final windowChannelService = Get.find<MultiWindowChannelService>();
+    windowChannelService.updateConfig(MultiWindowConfig.themeMode, themeMode.name);
   }
 
   Future<void> setIgnoreUpdateVersion(String versionCode) async {
@@ -1279,14 +1452,19 @@ class ConfigService extends GetxService {
     _ignoreUpdateVersion.value = versionCode;
   }
 
-  Future<void> setAppLanguage(String language) async {
-    await configDao.addOrUpdate(ConfigKey.appLanguage, language);
+  /// 持久化并应用新的界面语言配置。
+  Future<void> setAppLanguage(AppLanguage language) async {
+    await configDao.addOrUpdate(ConfigKey.appLanguage, language.storageValue);
     _language.value = language;
     updateLanguage();
     final homeController = Get.find<HomeController>();
     homeController.initNavBarItems();
     final settingController = Get.find<SettingsController>();
     settingController.checkAndroidEnvPermission();
+    if (PlatformExt.isDesktop) {
+      final trayService = Get.find<TrayService>();
+      trayService.updateTrayMenus(false);
+    }
   }
 
   Future<void> setCleanDataConfig(CleanDataConfig cleanDataConfig) async {
@@ -1339,32 +1517,6 @@ class ConfigService extends GetxService {
     _autoSyncMissingData.value = enable;
   }
 
-  Future<void> setEnableContentBlackList(bool enable) async {
-    await configDao.addOrUpdate(ConfigKey.enableContentBlackList, enable.toString());
-    _enableContentBlackList.value = enable;
-  }
-
-  ///更新内容黑名单数据
-  Future<void> setContentBlacklist(List<FilterRule> rules) async {
-    await configDao.addOrUpdate(ConfigKey.blacklist, jsonEncode(rules));
-    _contentBlackList.value = rules;
-  }
-
-  ///更新通知黑白名单数据
-  Future<void> setNotificationBlackWhiteList(WhiteBlackMode mode, List<FilterRule> blacklist, List<FilterRule> whitelist) async {
-    await configDao.addOrUpdate(
-      ConfigKey.notificationBlackWhiteList,
-      jsonEncode({
-        "mode": mode.name,
-        "blacklist": blacklist,
-        "whitelist": whitelist,
-      }),
-    );
-    _currentNotificationWhiteBlackMode.value = mode;
-    _notificationBlackList.value = blacklist;
-    _notificationWhiteList.value = whitelist;
-  }
-
   ///启用通知历史记录
   Future<void> setEnableRecordNotification(bool enabled) async {
     await configDao.addOrUpdate(ConfigKey.enableRecordNotification, enabled.toString());
@@ -1375,6 +1527,12 @@ class ConfigService extends GetxService {
   Future<void> setEnableShowMobileNotification(bool enabled) async {
     await configDao.addOrUpdate(ConfigKey.enableShowMobileNotification, enabled.toString());
     _enableShowMobileNotification.value = enabled;
+  }
+
+  ///控制桌面端接收文件成功后是否发送系统通知
+  Future<void> setNotifyOnReceivedFile(bool enabled) async {
+    await configDao.addOrUpdate(ConfigKey.notifyOnReceivedFile, enabled.toString());
+    _notifyOnReceivedFile.value = enabled;
   }
 
   ///保存 webdav 配置
@@ -1464,6 +1622,12 @@ class ConfigService extends GetxService {
     _stopListeningOnScreenClosed.value = stopListeningOnScreenClosed;
   }
 
+  ///网络切换时按配置决定是否保留当前连接
+  Future<void> setKeepConnectionsOnNetworkSwitch(bool keepConnectionsOnNetworkSwitch) async {
+    await configDao.addOrUpdate(ConfigKey.keepConnectionsOnNetworkSwitch, keepConnectionsOnNetworkSwitch.toString());
+    _keepConnectionsOnNetworkSwitch.value = keepConnectionsOnNetworkSwitch;
+  }
+
   ///当有新数据时发送广播通知
   Future<void> setSendBroadcastOnAdd(bool value) async {
     if (!Platform.isAndroid) {
@@ -1493,6 +1657,15 @@ class ConfigService extends GetxService {
     await clipboardService.setExcludeFormat(value);
   }
 
+  ///设置ios是否启用画中画
+  Future<void> setEnablePIP(bool value) async {
+    if (!Platform.isIOS) {
+      return;
+    }
+    await configDao.addOrUpdate(ConfigKey.enablePIP, value.toString());
+    _enablePIP.value = value;
+  }
+
   ///设置是否记录弹窗大小
   Future<void> setRememberPopupWindowSize(bool value) async {
     if (!Platform.isWindows) {
@@ -1500,6 +1673,17 @@ class ConfigService extends GetxService {
     }
     await configDao.addOrUpdate(ConfigKey.rememberPopupWindowSize, value.toString());
     _rememberPopupWindowSize.value = value;
+  }
+
+  /// 设置桌面端弹窗失焦后是否自动隐藏，并同步给所有已打开的子窗口。
+  Future<void> setAutoClosePopupOnBlur(bool value) async {
+    if (!PlatformExt.isDesktop) {
+      return;
+    }
+    await configDao.addOrUpdate(ConfigKey.autoClosePopupOnBlur, value.toString());
+    _autoClosePopupOnBlur.value = value;
+    final windowChannelService = Get.find<MultiWindowChannelService>();
+    await windowChannelService.updateConfig(MultiWindowConfig.autoClosePopupOnBlur, value);
   }
 
   ///更新弹窗大小
@@ -1527,6 +1711,30 @@ class ConfigService extends GetxService {
     _useTrayFlashingForConnection.value = enable;
   }
 
+  ///记录最大长度
+  Future<void> setRecordMaxLength(int recordMaxLength) async {
+    await configDao.addOrUpdate(ConfigKey.recordMaxLength, recordMaxLength.toString());
+    _recordMaxLength.value = recordMaxLength;
+  }
+
+  ///设置 Windows 是否接管 Win+V 打开历史弹窗。
+  Future<void> setTakeOverWinV(bool value) async {
+    if (!Platform.isWindows) {
+      return;
+    }
+    await configDao.addOrUpdate(ConfigKey.takeOverWinV, value.toString());
+    _takeOverWinV.value = value;
+  }
+
+  ///设置正常退出程序时是否自动恢复 Windows 系统 Win+V。
+  Future<void> setRestoreWinVOnExit(bool value) async {
+    if (!Platform.isWindows) {
+      return;
+    }
+    await configDao.addOrUpdate(ConfigKey.restoreWinVOnExit, value.toString());
+    _restoreWinVOnExit.value = value;
+  }
+
   //endregion
 
   //region 其他方法
@@ -1550,7 +1758,7 @@ class ConfigService extends GetxService {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       SystemChrome.setSystemUIOverlayStyle(
         SystemUiOverlayStyle.dark.copyWith(
-          systemNavigationBarColor: Colors.black,
+          systemNavigationBarColor: darkBackgroundColor2,
           systemNavigationBarIconBrightness: Brightness.light,
         ),
       );
@@ -1571,7 +1779,6 @@ class ConfigService extends GetxService {
 
   ///根据当前主题设置底部导航栏样式
   void setSystemUIOverlayAutoStyle() {
-    print("isDarkMode $currentIsDarkMode");
     if (currentIsDarkMode) {
       setSystemUIOverlayDarkStyle();
     } else {
@@ -1579,89 +1786,275 @@ class ConfigService extends GetxService {
     }
   }
 
-  ///更新语言选项
-  void updateLanguage() {
-    if (language == "auto") {
-      Get.updateLocale(Get.deviceLocale ?? Constants.defaultLocale);
-    } else {
-      final codes = language.split('_');
-      Get.updateLocale(Locale(codes[0], codes.length == 1 ? null : codes[1]));
+  ///迁移 1.5.0 以前的规则到现版本
+  Future<void> migrateRules() async {
+    if (_rulesMigrated) {
+      throw 'Rules Migrated';
     }
-  }
+    final dbRulesCnt = ((await ruleDao.count()) ?? 0);
+    if (dbRulesCnt != 0) {
+      _rulesMigrated = true;
+      return;
+    }
+    final cfg = configDao;
+    var rules = <Rule>[];
+    int order = 1;
+    final version = DateTime.now().yyyyMMddHHmmss;
+    final allPlatforms = (SupportPlatForm.values.map((e) => e.name).toList()..sort()).join(',');
 
-  ///判断是否命中内容黑名单
-  FilterRuleMatchResult matchesContentBlacklist(HistoryContentType type, String content, ClipboardSource? source) {
-    if (!enableContentBlackList) {
-      return FilterRuleMatchResult.notMatched;
-    }
-    // 遍历所有黑名单规则
-    for (final rule in contentBlackList) {
-      // 跳过未启用的规则
-      if (!rule.enable) continue;
-      if (rule.matched(type, content, source)) {
-        return FilterRuleMatchResult.matched(rule);
-      }
-    }
+    final enableSmsSync = (await cfg.getConfigByKey(ConfigKey.enableSmsSync, false));
+    final tagRulesStr = (await cfg.getConfigByKey<String?>(ConfigKey.tagRules, null));
 
-    // 没有命中任何黑名单规则
-    return FilterRuleMatchResult.notMatched;
-  }
-
-  ///判断是否命中通知黑白名单规则
-  FilterRuleMatchResult matchesNotificationRuleList(String content, String pkgName) {
-    //未启用
-    if (!enableRecordNotification) {
-      return FilterRuleMatchResult.notMatched;
-    }
+    //region 老标签规则转换
     try {
-      final json = jsonDecode(content);
-      final title = json["title"];
-      final detail = json["content"];
-      content = "$title\n$detail";
+      final tagRules = jsonDecode(tagRulesStr ?? Constants.defaultTagRules) as Map<String, dynamic>;
+      for (var rule in (tagRules["data"] as List<dynamic>).cast<Map<String, dynamic>>()) {
+        try {
+          final name = rule['name'];
+          final regex = rule['rule'];
+          final isDefaultTag = name == TranslationKey.defaultLinkTagName.tr;
+          rules.add(
+            Rule(
+              id: isDefaultTag ? 2061101839524896768 :snowflake.nextId(),
+              name: name,
+              platforms: allPlatforms,
+              trigger: RuleTrigger.onCopy.name,
+              type: RuleContentType.regex.name,
+              regexTags: name,
+              regexMain: regex,
+              regexAllowAddTag: true,
+              version: version,
+              order: order++,
+              enabled: true,
+              regexWhiteBlackMode: WhiteBlackMode.defaultMode.name,
+              scriptContent: Constants.luaTemplateRule,
+              scriptLanguage: RuleScriptLanguage.lua.name,
+            ),
+          );
+        } catch (err, stack) {
+          logger.error(tag, err, stack);
+        }
+      }
     } catch (err, stack) {
-      Log.error(tag, "matchesNotificationRuleList error: $err,$stack");
+      logger.error(tag, err, stack);
     }
-    final ruleList = currentNotificationWhiteBlackMode == WhiteBlackMode.black ? notificationBlackList : notificationWhiteList;
-    final source = ClipboardSource(id: pkgName, name: "", time: null, iconB64: "");
-    for (var rule in ruleList) {
-      // 跳过未启用的规则
-      if (!rule.enable) continue;
-      if (rule.matched(HistoryContentType.notification, content, source)) {
-        return FilterRuleMatchResult.matched(rule);
+    //endregion
+
+    //region 老短信规则转换
+    final smsRulesStr = (await cfg.getConfigByKey<String?>(ConfigKey.smsRules, null));
+    try {
+      final smsRules = jsonDecode(smsRulesStr ?? Constants.defaultSmsRules) as Map<String, dynamic>;
+      final allSmsRules = (smsRules["data"] as List<dynamic>).cast<Map<String, dynamic>>();
+      for (var rule in allSmsRules) {
+        try {
+          final name = rule['name'];
+          final regex = rule['rule'];
+          rules.add(
+            Rule(
+              id: snowflake.nextId(),
+              name: name,
+              platforms: SupportPlatForm.android.name,
+              trigger: RuleTrigger.onSms.name,
+              type: RuleContentType.regex.name,
+              regexMain: regex,
+              version: version,
+              order: order++,
+              enabled: enableSmsSync,
+              regexWhiteBlackMode: WhiteBlackMode.defaultMode.name,
+              scriptContent: Constants.luaTemplateRule,
+              scriptLanguage: RuleScriptLanguage.lua.name,
+            ),
+          );
+        } catch (err, stack) {
+          logger.error(tag, err, stack);
+        }
+      }
+      if (allSmsRules.isEmpty && enableSmsSync) {
+        try {
+          //若启用但是规则为空则代表所有短信都同步
+          rules.add(
+            Rule(
+              id: snowflake.nextId(),
+              name: TranslationKey.all.tr,
+              platforms: SupportPlatForm.android.name,
+              trigger: RuleTrigger.onSms.name,
+              type: RuleContentType.regex.name,
+              regexMain: ".+",
+              version: version,
+              order: order++,
+              enabled: enableSmsSync,
+              regexWhiteBlackMode: WhiteBlackMode.defaultMode.name,
+              scriptContent: Constants.luaTemplateRule,
+              scriptLanguage: RuleScriptLanguage.lua.name,
+            ),
+          );
+        } catch (err, stack) {
+          logger.error(tag, err, stack);
+        }
+      }
+    } catch (err, stack) {
+      logger.error(tag, err, stack);
+    }
+    //endregion
+
+    //region 老通知规则转换
+
+    //region 老通知规则反序列化
+    List<FilterRule> notificationWhiteList = [];
+    List<FilterRule> notificationBlackList = [];
+    WhiteBlackMode? currentNotificationWhiteBlackMode;
+    final notificationBlackWhiteList = await cfg.getConfigByKey(ConfigKey.notificationBlackWhiteList, "");
+    try {
+      if (notificationBlackWhiteList.isNullOrEmpty) {
+        notificationWhiteList = [];
+        notificationBlackList = [];
+      } else {
+        final map = jsonDecode(notificationBlackWhiteList) as Map<String, dynamic>;
+        currentNotificationWhiteBlackMode = WhiteBlackMode.values.byName(map["mode"].toString());
+        notificationBlackList = (map["blacklist"]! as List<dynamic>).map((item) => FilterRule.fromJson(item)).toList();
+        notificationWhiteList = (map["whitelist"]! as List<dynamic>).map((item) => FilterRule.fromJson(item)).toList();
+      }
+    } catch (err, stack) {
+      debugPrint(err.toString());
+      debugPrintStack(stackTrace: stack);
+      notificationWhiteList = [];
+      notificationBlackList = [];
+    }
+    //endregion
+
+    var index = 1;
+
+    //region 黑名单通知规则
+    for (var rule in notificationBlackList) {
+      try {
+        var regex = rule.content;
+        if (rule.isAllContent) {
+          regex = ".+";
+        }
+        final sources = (rule.appIds.toList()..sort()).join(",");
+        rules.add(
+          Rule(
+            id: snowflake.nextId(),
+            name: "${TranslationKey.notification.tr}${index++}",
+            platforms: SupportPlatForm.android.name,
+            trigger: RuleTrigger.onNotification.name,
+            type: RuleContentType.regex.name,
+            sources: sources,
+            regexMain: regex,
+            version: version,
+            order: order++,
+            regexWhiteBlackMode: WhiteBlackMode.black.name,
+            regexIsFinalRule: true,
+            enabled: currentNotificationWhiteBlackMode == WhiteBlackMode.black && rule.enable,
+            scriptContent: Constants.luaTemplateRule,
+            scriptLanguage: RuleScriptLanguage.lua.name,
+          ),
+        );
+      } catch (err, stack) {
+        logger.error(tag, err, stack);
+      }
+    }
+    //endregion
+
+    //region 白名单通知规则
+    for (var rule in notificationWhiteList) {
+      try {
+        var regex = rule.content;
+        if (rule.isAllContent) {
+          regex = ".+";
+        }
+        final sources = (rule.appIds.toList()..sort()).join(",");
+        rules.add(
+          Rule(
+            id: snowflake.nextId(),
+            name: "${TranslationKey.notification.tr}${index++}",
+            platforms: SupportPlatForm.android.name,
+            trigger: RuleTrigger.onNotification.name,
+            type: RuleContentType.regex.name,
+            sources: sources,
+            regexMain: regex,
+            version: version,
+            order: order++,
+            regexWhiteBlackMode: WhiteBlackMode.white.name,
+            enabled: currentNotificationWhiteBlackMode == WhiteBlackMode.white && rule.enable,
+            scriptContent: Constants.luaTemplateRule,
+            scriptLanguage: RuleScriptLanguage.lua.name,
+          ),
+        );
+      } catch (err, stack) {
+        logger.error(tag, err, stack);
+      }
+    }
+    //endregion
+
+    //endregion
+
+    //region 老内容规则转换
+    //是否黑名单模式
+
+    final isContentBlackMode = (await cfg.getConfigByKey(ConfigKey.enableContentBlackList, false));
+    final contentRules = (await cfg.getConfigByKey<List<FilterRule>>(
+      ConfigKey.blacklist,
+      <FilterRule>[],
+      convert: (value) {
+        try {
+          List<Map<String, dynamic>> jsonList = (jsonDecode(value) as List<dynamic>).cast();
+          return jsonList.map((item) => FilterRule.fromJson(item)).toList();
+        } catch (err, stack) {
+          debugPrint(err.toString());
+          debugPrintStack(stackTrace: stack);
+          return [];
+        }
+      },
+    ));
+    index = 1;
+    for (var rule in contentRules) {
+      try {
+        rules.add(
+          Rule(
+            id: snowflake.nextId(),
+            name: "${TranslationKey.content.tr}${index++}",
+            platforms: allPlatforms,
+            trigger: RuleTrigger.onCopy.name,
+            type: RuleContentType.regex.name,
+            regexTags: "",
+            regexMain: rule.content,
+            regexAllowAddTag: false,
+            regexIsFinalRule: true,
+            version: version,
+            order: order++,
+            enabled: isContentBlackMode,
+            regexWhiteBlackMode: WhiteBlackMode.black.name,
+            scriptContent: Constants.luaTemplateRule,
+            scriptLanguage: RuleScriptLanguage.lua.name,
+          ),
+        );
+      } catch (err, stack) {
+        logger.error(tag, err, stack);
       }
     }
 
-    //未命中
-    return FilterRuleMatchResult.notMatched;
-  }
+    //endregion
 
-  ///获取分词文件的存储位置
-  Future<String> getJiebaSegmentFileDirPath() async {
-    late String dirPath;
-    if (Platform.isWindows) {
-      dirPath = Directory(Platform.resolvedExecutable).parent.path;
-      if (!FileUtil.testWriteable(dirPath)) {
-        dirPath = documentsPath;
+    if (rules.isNotEmpty) {
+      await ruleDao.addRules(rules);
+      final opRecordDao = Get.find<DbService>().opRecordDao;
+      for (var newRule in rules) {
+        await opRecordDao.addAndNotify(OperationRecord.fromSimple(Module.rule, OpMethod.add, newRule.id));
       }
-    } else {
-      dirPath = documentsPath;
     }
-    return "$dirPath/jieba".normalizePath;
+    _rulesMigrated = true;
   }
 
-  ///检测是否可分词
-  Future<bool> checkJiebaSegment() async {
-    if (_jiebaInited) {
-      return true;
-    }
-    final dirPath = await getJiebaSegmentFileDirPath();
-    final dictFilePath = "$dirPath/dict.txt".normalizePath;
-    final probEmitFilePath = "$dirPath/prob_emit.txt".normalizePath;
-    final result = await File(dictFilePath).exists() && await File(probEmitFilePath).exists();
-    if (!result) return false;
-    await JiebaSegmenter.init(dirPath);
-    _jiebaInited = true;
-    return true;
+  /// 根据当前语言配置刷新 GetX 的国际化环境。
+  void updateLanguage() {
+    final locale = language.resolveLocale(Get.deviceLocale);
+    Get.updateLocale(locale);
+    final windowChannelService = Get.find<MultiWindowChannelService>();
+    windowChannelService.updateConfig(MultiWindowConfig.language, {
+      'languageCode':locale.languageCode,
+      'countryCode':locale.countryCode,
+    });
   }
 
   //endregion

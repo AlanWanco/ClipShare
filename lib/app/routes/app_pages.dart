@@ -1,3 +1,6 @@
+import 'package:clipshare/app/modules/rules_module/rules_bindings.dart';
+import 'package:clipshare/app/modules/rules_module/rules_page.dart';
+
 import '../../app/modules/db_editor_module/db_editor_page.dart';
 import '../../app/modules/db_editor_module/db_editor_bindings.dart';
 import '../../app/modules/clean_data_module/clean_data_page.dart';
@@ -8,8 +11,6 @@ import '../../app/modules/licenses_module/licenses_page.dart';
 import '../../app/modules/licenses_module/licenses_bindings.dart';
 import '../../app/modules/update_log_module/update_log_page.dart';
 import '../../app/modules/update_log_module/update_log_bindings.dart';
-import '../../app/modules/about_module/about_page.dart';
-import '../../app/modules/about_module/about_bindings.dart';
 import '../../app/modules/debug_module/debug_page.dart';
 import '../../app/modules/debug_module/debug_bindings.dart';
 import '../../app/modules/working_mode_selection_module/working_mode_selection_page.dart';
@@ -31,9 +32,6 @@ import '../../app/modules/history_module/history_page.dart';
 import '../../app/modules/home_module/home_bindings.dart';
 import '../../app/modules/log_module/log_bindings.dart';
 import '../../app/modules/log_module/log_page.dart';
-import '../../app/modules/search_module/search_bindings.dart';
-import '../../app/modules/search_module/search_page.dart';
-import '../../app/modules/settings_module/settings_bindings.dart';
 import '../../app/modules/settings_module/settings_page.dart';
 import '../../app/modules/splash_module/splash_bindings.dart';
 import '../../app/modules/splash_module/splash_page.dart';
@@ -65,11 +63,6 @@ abstract class AppPages {
       binding: HistoryBinding(),
     ),
     GetPage(
-      name: Routes.SEARCH,
-      page: () => SearchPage(),
-      binding: SearchBinding(),
-    ),
-    GetPage(
       name: Routes.DEVICE,
       page: () => DevicePage(),
       binding: DeviceBinding(),
@@ -77,7 +70,6 @@ abstract class AppPages {
     GetPage(
       name: Routes.SETTINGS,
       page: () => SettingsPage(),
-      binding: SettingsBinding(),
     ),
     GetPage(
       name: Routes.AUTHENTICATION,
@@ -115,11 +107,6 @@ abstract class AppPages {
       binding: DebugBinding(),
     ),
     GetPage(
-      name: Routes.ABOUT,
-      page: () => AboutPage(),
-      binding: AboutBinding(),
-    ),
-    GetPage(
       name: Routes.UPDATE_LOG,
       page: () => UpdateLogPage(),
       binding: UpdateLogBinding(),
@@ -143,6 +130,11 @@ abstract class AppPages {
       name: Routes.DB_EDITOR,
       page: () => DbEditorPage(),
       binding: DbEditorBinding(),
+    ),
+    GetPage(
+      name: Routes.RULES,
+      page: () => RulesPage(),
+      binding: RulesBinding(),
     ),
   ];
 }

@@ -15,7 +15,6 @@ import 'package:clipshare/app/data/repository/entity/tables/device.dart';
 import 'package:clipshare/app/listeners/dev_alive_listener.dart';
 import 'package:clipshare/app/listeners/device_remove_listener.dart';
 import 'package:clipshare/app/modules/history_module/history_controller.dart';
-import 'package:clipshare/app/modules/search_module/search_controller.dart' as search_module;
 import 'package:clipshare/app/services/clipboard_source_service.dart';
 import 'package:clipshare/app/services/config_service.dart';
 import 'package:clipshare/app/services/db_service.dart';
@@ -258,7 +257,7 @@ class CleanDataController extends GetxController implements DeviceRemoveListener
           }
         })
         .catchError((err, stack) {
-          Log.error(logTag, "$err: $stack");
+          logger.error(logTag, "$err: $stack");
           if (!mute) {
             //关闭加载弹窗
             Get.back();
@@ -287,7 +286,7 @@ class CleanDataController extends GetxController implements DeviceRemoveListener
           }
         })
         .catchError((err, stack) {
-          Log.error(logTag, "$err: $stack");
+          logger.error(logTag, "$err: $stack");
           //关闭加载弹窗
           Get.back();
           Global.showSnackBarWarn(context: Get.context!, text: TranslationKey.deletionFailed.tr);
@@ -314,7 +313,7 @@ class CleanDataController extends GetxController implements DeviceRemoveListener
           }
         })
         .catchError((err, stack) {
-          Log.error(logTag, "$err: $stack");
+          logger.error(logTag, "$err: $stack");
           //关闭加载弹窗
           Get.back();
           Global.showSnackBarWarn(context: Get.context!, text: TranslationKey.deletionFailed.tr);
@@ -453,9 +452,7 @@ class CleanDataController extends GetxController implements DeviceRemoveListener
   ///刷新历史页面
   void refreshHistoryPage() {
     final historyController = Get.find<HistoryController>();
-    final searchController = Get.find<search_module.SearchController>();
     historyController.refreshData();
-    searchController.refreshData();
   }
 
   ///初始化自动清理定时器
@@ -463,7 +460,7 @@ class CleanDataController extends GetxController implements DeviceRemoveListener
     cleanDataTimer?.cancel();
     var cfg = appConfig.cleanDataConfig;
     if (cfg == null || !cfg.autoClean) {
-      Log.debug(logTag, "clean data config not found or disable auto clean");
+      logger.debug(logTag, "clean data config not found or disable auto clean");
       return;
     }
     final nextTime = cfg.nextCleanTime!;
@@ -472,7 +469,7 @@ class CleanDataController extends GetxController implements DeviceRemoveListener
     if (now.isAfter(nextTime)) {
       await cleanData(true)
           .then((_) {
-            Log.debug(logTag, "auto clean data success.");
+            logger.debug(logTag, "auto clean data success.");
             final newNextTime = CronUtil.getNextTime(cfg.cron!);
             appConfig.setCleanDataConfig(
               cfg.copyWith(
@@ -482,12 +479,12 @@ class CleanDataController extends GetxController implements DeviceRemoveListener
             );
           })
           .catchError((err, stack) {
-            Log.debug(logTag, "auto clean data failed. $err $stack");
+            logger.debug(logTag, "auto clean data failed. $err $stack");
           });
     }
     //设置定时器
     final newNextTime = CronUtil.getNextTime(cfg.cron!)!;
-    Log.debug(logTag, "set clean data timer, next execute time: $newNextTime");
+    logger.debug(logTag, "set clean data timer, next execute time: $newNextTime");
     final diff = now.difference(newNextTime);
     cleanDataTimer = Timer(Duration(seconds: diff.inSeconds.abs() + 1), initAutoClean);
   }

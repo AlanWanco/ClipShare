@@ -4,7 +4,6 @@ import 'dart:math';
 import 'package:clipshare/app/data/enums/hot_key_type.dart';
 import 'package:clipshare/app/services/tray_service.dart';
 import 'package:clipshare/app/utils/extensions/number_extension.dart';
-import 'package:clipshare/app/utils/global.dart';
 import 'package:clipshare/app/utils/log.dart';
 import 'package:clipshare/app/utils/notify_util.dart';
 import 'package:clipshare_clipboard_listener/clipboard_manager.dart';
@@ -55,7 +54,7 @@ class AppHotKeyHandler {
       key,
       keyDownHandler: (hotKey) async {
         final multiWindowService = Get.find<MultiWindowChannelService>();
-        clipboardManager.storeCurrentWindowHwnd();
+        // clipboardManager.storeCurrentWindowHwnd();
         final appConfig = Get.find<ConfigService>();
         var ids = List.empty();
         try {
@@ -106,6 +105,8 @@ class AppHotKeyHandler {
             title: title,
             tag: MultiWindowTag.history,
             themeMode: appConfig.appTheme,
+            autoClosePopupOnBlur: appConfig.autoClosePopupOnBlur,
+            selfDeviceGuid: appConfig.device.guid,
           ).toString(),
         );
         appConfig.historyWindow = window;
@@ -162,8 +163,8 @@ class AppHotKeyHandler {
         //多显示器不知道怎么判断鼠标在哪个显示器中，所以默认主显示器
         Size screenSize = (await screenRetriever.getPrimaryDisplay()).size;
         var [width, height] = [355.0 * radio, 630.0 * radio];
-        if (appConfig.rememberPopupWindowSize && appConfig.historyWindowSize != null) {
-          final size = appConfig.historyWindowSize!;
+        if (appConfig.rememberPopupWindowSize && appConfig.fileSenderWindowSize != null) {
+          final size = appConfig.fileSenderWindowSize!;
           width = size.width * radio;
           height = size.height * radio;
         }
@@ -190,6 +191,8 @@ class AppHotKeyHandler {
             title: title,
             tag: MultiWindowTag.devices,
             themeMode: appConfig.appTheme,
+            autoClosePopupOnBlur: appConfig.autoClosePopupOnBlur,
+            selfDeviceGuid: appConfig.device.guid,
             otherArgs: args,
           ).toString(),
         );
@@ -209,7 +212,7 @@ class AppHotKeyHandler {
     await hotKeyManager.register(
       key,
       keyDownHandler: (hotKey) async {
-        Log.debug(tag, "ShowMainWindow HotKey Down");
+        logger.debug(tag, "ShowMainWindow HotKey Down");
         final trayService = Get.find<TrayService>();
         trayService.clickShowWindowItem();
         //临时让其置顶显示然后再恢复，否则可能被其他应用盖住
@@ -226,7 +229,7 @@ class AppHotKeyHandler {
     await hotKeyManager.register(
       key,
       keyDownHandler: (hotKey) async {
-        Log.debug(tag, "ExitApp HotKey Down");
+        logger.debug(tag, "ExitApp HotKey Down");
         const notifyKey = "appExit";
         final notifyId = await NotifyUtil.notify(content: TranslationKey.exitAppViaHotKey.tr, key: notifyKey);
         if (notifyId != null) {

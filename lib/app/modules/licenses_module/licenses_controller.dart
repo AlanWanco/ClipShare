@@ -6,6 +6,36 @@ import 'package:get/get.dart';
 class LicensesController extends GetxController {
   final licenses = [
     {
+      "name": "super_drag_and_drop",
+      "license": "MIT",
+      "url": "https://pub.dev/packages/super_drag_and_drop",
+    },
+    {
+      "name": "win32_registry",
+      "license": "BSD-3-Clause",
+      "url": "https://pub.dev/packages/win32_registry",
+    },
+    {
+      "name": "flutter_colorpicker",
+      "license": "MIT",
+      "url": "https://pub.dev/packages/flutter_colorpicker",
+    },
+    {
+      "name": "simple_icons",
+      "license": "unknown",
+      "url": "https://pub.dev/packages/simple_icons",
+    },
+    {
+      "name": "flutter_embed_lua",
+      "license": "BSD-3-Clause",
+      "url": "https://github.com/aa2013/flutter_embed_lua",
+    },
+    {
+      "name": "flutter_expandable_fab",
+      "license": "MIT",
+      "url": "https://pub.dev/packages/flutter_expandable_fab",
+    },
+    {
       "name": "flutter_slidable",
       "license": "MIT",
       "url": "https://pub.dev/packages/flutter_slidable",
@@ -23,7 +53,7 @@ class LicensesController extends GetxController {
     {
       "name": "minio",
       "license": "MIT",
-      "url": "https://pub.dev/packages/minio",
+      "url": "https://github.com/aa2013/minio-dart",
     },
     {
       "name": "ali_yun_oss",
@@ -31,9 +61,9 @@ class LicensesController extends GetxController {
       "url": "https://github.com/aa2013/ali_yun_oss.git",
     },
     {
-      "name": "webdav_client",
-      "license": "BSD-3-Clause",
-      "url": "https://github.com/aa2013/webdav_client.git",
+      "name": "webdav_plus",
+      "license": "MIT",
+      "url": "https://github.com/aa2013/webdav_plus.git",
     },
     {
       "name": "zip_flutter",
@@ -221,9 +251,9 @@ class LicensesController extends GetxController {
       "url": "https://pub.dev/packages/flutter_staggered_grid_view",
     },
     {
-      "name": "material_design_icons_flutter",
+      "name": "flutter_material_design_icons",
       "license": "MIT",
-      "url": "https://pub.dev/packages/material_design_icons_flutter",
+      "url": "https://pub.dev/packages/flutter_material_design_icons",
     },
     {
       "name": "local_auth",

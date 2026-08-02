@@ -1,13 +1,12 @@
 import 'package:clipshare/app/data/enums/obj_storage_type.dart';
 import 'package:clipshare/app/data/models/exception_info.dart';
 import 'package:clipshare/app/data/models/storage/s3_config.dart';
-import 'package:clipshare/app/handlers/storage/aliyun_oss_client.dart';
-import 'package:clipshare/app/handlers/storage/s3_client.dart';
 import 'package:clipshare/app/handlers/storage/storage_client.dart';
 import 'package:clipshare/app/routes/app_pages.dart';
 import 'package:clipshare/app/utils/constants.dart';
 import 'package:clipshare/app/utils/extensions/number_extension.dart';
 import 'package:clipshare/app/utils/extensions/platform_extension.dart';
+import 'package:clipshare/app/utils/extensions/storage_config_extension.dart';
 import 'package:clipshare/app/utils/extensions/string_extension.dart';
 import 'package:clipshare/app/utils/global.dart';
 import 'package:clipshare/app/utils/log.dart';
@@ -17,6 +16,7 @@ import 'package:clipshare/app/widgets/loading.dart';
 import 'package:flutter/material.dart';
 import 'package:clipshare/app/data/enums/translation_key.dart';
 import 'package:get/get.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 class S3ConfigEditDialog extends StatefulWidget {
   final void Function(S3Config config) onOk;
@@ -41,6 +41,7 @@ class _S3ConfigEditDialogState extends State<S3ConfigEditDialog> {
   final bucketNameEditor = TextEditingController();
   final regionEditor = TextEditingController();
   var pathStyle = false;
+  final uaEditor = TextEditingController();
   final baseDirEditor = TextEditingController(text: '/');
 
   ObjStorageType objectStorageType = ObjStorageType.s3;
@@ -66,6 +67,7 @@ class _S3ConfigEditDialogState extends State<S3ConfigEditDialog> {
     region: regionEditor.text.isNotEmpty ? regionEditor.text : null,
     pathStyle: pathStyle,
     baseDir: baseDirEditor.text,
+    userAgent: uaEditor.text.isNotEmpty ? uaEditor.text : null,
   );
 
   @override
@@ -88,6 +90,7 @@ class _S3ConfigEditDialogState extends State<S3ConfigEditDialog> {
     baseDirEditor.text = config.baseDir;
     objectStorageType = config.type;
     pathStyle = config.pathStyle;
+    uaEditor.text = config.userAgent ?? '';
   }
 
   bool validateNameEditor() {
@@ -176,10 +179,7 @@ class _S3ConfigEditDialogState extends State<S3ConfigEditDialog> {
 
   bool validateBaseDirEditor() {
     bool isValid;
-    if (baseDirEditor.text == "/") {
-      isValid = false;
-      baseDirErrText = TranslationKey.notAllowRootPath.tr;
-    } else if (baseDirEditor.text.isEmpty) {
+    if (baseDirEditor.text.isEmpty) {
       baseDirErrText = TranslationKey.baseDirectoryRequired.tr;
       isValid = false;
     } else if (!baseDirEditor.text.startsWith('/')) {
@@ -212,12 +212,7 @@ class _S3ConfigEditDialogState extends State<S3ConfigEditDialog> {
       });
       late final ExceptionInfo? exception;
       try {
-        late final StorageClient s3Client;
-        if (config.type == ObjStorageType.aliyunOss) {
-          s3Client = AliyunOssClient(config);
-        } else {
-          s3Client = S3Client(config);
-        }
+        final StorageClient s3Client = config.toClient();
         if (!testingConnection) {
           return;
         }
@@ -259,14 +254,15 @@ class _S3ConfigEditDialogState extends State<S3ConfigEditDialog> {
                   onPressed: testingConnection
                       ? null
                       : () async {
-                          var hasPerm = await PermissionHelper.testAndroidCameraPerm();
+                          var hasPerm = await PermissionHelper.testCameraPerm();
                           if (!hasPerm) {
-                            await PermissionHelper.reqAndroidCameraPerm();
-                            hasPerm = await PermissionHelper.testAndroidCameraPerm();
+                            await PermissionHelper.reqCameraPerm();
+                            hasPerm = await PermissionHelper.testCameraPerm();
                             if (!hasPerm) {
                               Global.showTipsDialog(
                                 context: context,
                                 text: TranslationKey.noCameraPermission.tr,
+                                onOk: () => openAppSettings(),
                               );
                               return;
                             }
@@ -280,10 +276,10 @@ class _S3ConfigEditDialogState extends State<S3ConfigEditDialog> {
                               });
                             } else {
                               Global.showTipsDialog(context: context, text: TranslationKey.qrCodeScanError.tr);
-                              Log.warn(tag, "scan result is null");
+                              logger.warn(tag, "scan result is null");
                             }
                           } catch (err, stack) {
-                            Log.error(tag, err, stack);
+                            logger.error(tag, err, stack);
                             Global.showTipsDialog(context: context, text: TranslationKey.qrCodeScanError.tr);
                           }
                         },
@@ -481,6 +477,20 @@ class _S3ConfigEditDialogState extends State<S3ConfigEditDialog> {
                   ),
                   const SizedBox(height: 16),
 
+                  //(optional)
+                  if (objectStorageType == ObjStorageType.s3)
+                    TextField(
+                      controller: uaEditor,
+                      enabled: !testingConnection,
+                      decoration: InputDecoration(
+                        labelText: 'User-Agent (${TranslationKey.optional.tr})',
+                        hintStyle: TextStyle(color: Colors.grey[400]),
+                        border: const OutlineInputBorder(),
+                      ),
+                    ),
+                  if (objectStorageType == ObjStorageType.s3)
+                    const SizedBox(height: 16),
+
                   // Base Directory
                   Row(
                     children: [
@@ -518,14 +528,14 @@ class _S3ConfigEditDialogState extends State<S3ConfigEditDialog> {
                                           onLoadFiles: (String path) async {
                                             selectedPath = path.unixPath;
                                             final tempConfig = config.copyWith(baseDir: Constants.unixDirSeparate);
-                                            final s3client = objectStorageType == ObjStorageType.aliyunOss ? AliyunOssClient(tempConfig) : S3Client(tempConfig);
+                                            final s3client = tempConfig.toClient();
                                             final list = await s3client.list(path: path);
                                             final dirs = list.where((item) => item.isDir);
                                             return dirs.map((item) => FileItem(name: item.name, isDirectory: true, fullPath: item.path)).toList();
                                           },
                                           onCreateDirectory: (current, name) {
                                             final tempConfig = config.copyWith(baseDir: Constants.unixDirSeparate);
-                                            final s3client = objectStorageType == ObjStorageType.aliyunOss ? AliyunOssClient(tempConfig) : S3Client(tempConfig);
+                                            final s3client = tempConfig.toClient();
                                             return s3client.createDirectory("$current/$name/");
                                           },
                                           shouldShowUpLevel: (path) => path != Constants.unixDirSeparate || path.isNullOrEmpty,
@@ -539,10 +549,6 @@ class _S3ConfigEditDialogState extends State<S3ConfigEditDialog> {
                                         ),
                                         TextButton(
                                           onPressed: () {
-                                            if (selectedPath == "/") {
-                                              Global.showTipsDialog(context: context, text: TranslationKey.notAllowRootPath.tr);
-                                              return;
-                                            }
                                             baseDirEditor.text = selectedPath;
                                             dialog?.close();
                                             validateFields();

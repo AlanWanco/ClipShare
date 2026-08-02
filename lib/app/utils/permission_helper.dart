@@ -44,7 +44,7 @@ class PermissionHelper {
     dirPath = dirPath ?? appConfig.rootStorePath;
     if (!dirPath.startsWith(Constants.androidDownloadPath)) {
       var status = await Permission.manageExternalStorage.request();
-      Log.info(tag, "request manageExternalStoragePermission: $status");
+      logger.info(tag, "request manageExternalStoragePermission: $status");
     }
     late final PermissionStatus status;
     if (appConfig.osVersion >= 13) {
@@ -52,7 +52,7 @@ class PermissionHelper {
     } else {
       status = await Permission.storage.request();
     }
-    Log.info(tag, "request storagePermission: $status");
+    logger.info(tag, "request storagePermission: $status");
   }
 
   ///测试文件操作
@@ -88,20 +88,48 @@ class PermissionHelper {
   static Future<void> reqAndroidReadSms() async {
     if (!Platform.isAndroid) return;
     var status = await Permission.sms.request();
-    Log.info(tag, "request AndroidReadSms: $status");
+    logger.info(tag, "request AndroidReadSms: $status");
   }
 
-  ///测试Android相机权限
-  static Future<bool> testAndroidCameraPerm() async {
-    if (!Platform.isAndroid) return false;
+  ///测试相机权限
+  static Future<bool> testCameraPerm() async {
+    if (!Platform.isAndroid && !Platform.isIOS) return false;
     return await Permission.camera.isGranted;
   }
 
-  ///请求Android相机权限
-  static Future<void> reqAndroidCameraPerm() async {
-    if (!Platform.isAndroid) return;
+  ///请求相机权限
+  static Future<void> reqCameraPerm() async {
+    if (!Platform.isAndroid && !Platform.isIOS) return;
     var status = await Permission.camera.request();
-    Log.info(tag, "request Android camera: $status");
+    logger.info(tag, "request camera: $status");
+  }
+
+  ///检查IOS相册权限
+  static Future<bool> checkIOSPhotoPermission() async {
+    if(!Platform.isIOS) return false;
+    var status = await Permission.photos.status;
+    return status.isGranted || status.isLimited;
+  }
+
+  ///请求IOS相册权限
+  static Future<bool> reqIOSPhotoPermission() async {
+    if(!Platform.isIOS) return false;
+    final status = await Permission.photos.request();
+    return status.isGranted || status.isLimited;
+  }
+
+  ///检查IOS通知权限
+  static Future<bool> checkIOSNotificationPermission() async {
+    if(!Platform.isIOS) return false;
+    var status = await Permission.notification.status;
+    return status.isGranted || status.isLimited;
+  }
+
+  ///请求IOS通知权限
+  static Future<bool> reqIOSNotificationPermission() async {
+    if(!Platform.isIOS) return false;
+    final status = await Permission.notification.request();
+    return status.isGranted || status.isLimited;
   }
 
   ///测试无障碍权限
@@ -110,9 +138,20 @@ class PermissionHelper {
     return await clipboardManager.checkAccessibility();
   }
 
-  ///请求无障碍权限
-  static Future<void> reqAndroidAccessibilityPerm() async {
-    if (!Platform.isAndroid) return;
-    return await clipboardManager.requestAccessibility();
+  ///静默尝试自动授予无障碍权限，不成功时不跳转系统设置
+  static Future<bool> tryAutoGrantAndroidAccessibilityPerm() async {
+    if (!Platform.isAndroid) return false;
+    //插件内部特权命令环境跟随剪贴板监听启动环境，这里只声明是否自动授权
+    return await clipboardManager.requestAccessibility(autoGrant: true);
+  }
+
+  ///请求无障碍权限，自动授权失败时回退到系统设置页
+  static Future<bool> reqAndroidAccessibilityPerm() async {
+    if (!Platform.isAndroid) return false;
+    final granted = await tryAutoGrantAndroidAccessibilityPerm();
+    if (granted) return true;
+    //没有 Shizuku/root 能力或自动写入失败时，回退到旧的手动授权流程
+    await clipboardManager.requestAccessibility();
+    return false;
   }
 }

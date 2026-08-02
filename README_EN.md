@@ -16,12 +16,7 @@ ClipShare is a cross-platform clipboard synchronization tool based on Flutter, s
 
 This project started because I wanted a clipboard synchronization tool on Android, but basically none could provide seamless background sync on Android 10+ and in public network environments (I am a bit lazy), so I decided to build it myself.
 
-Currently, all platforms except iOS have been released. The iOS version is still in testing. If you want to participate in iOS testing and development, please pull the corresponding branch code:
-
-+ ClipShare: [ClipShare-ios-dev](https://github.com/aa2013/ClipShare/tree/ios-support-dev)
-+ Clipboard plugin: [ClipboardListener-ios](https://github.com/aa2013/ClipboardListener/tree/ios) 。
-
-The iOS version can currently also be downloaded as an unsigned installation package in [issue#6](https://github.com/aa2013/ClipShare/issues/6)
+The iOS version has been added to the build process, but it has not been fully tested yet.
 
 ## Current Tech Status and Plan
 
@@ -71,7 +66,7 @@ There are currently two main listening paths on Android:
 | Windows | ✅ | Supported |
 | Linux | ✅ | Supported |
 | macOS | ✅ | Supported |
-| iOS | ⚠️ | The repository includes an iOS project, but the current release workflow does not include iOS, and it is still in testing |
+| iOS | ✅ | Supported, but not fully tested yet |
 
 ## Project Structure
 
@@ -155,7 +150,7 @@ This ensures a consistent key space across all languages, making missing-key che
 
 ## Development Environment Requirements
 
-- Flutter `3.35.x` (CI uses `3.35.3`)
+- Flutter `3.41.9`
 - Dart SDK `>=3.8.0 <4.0.0`
 - JDK 17 is required for Android builds
 - Linux desktop builds require GTK and related dependencies (see `.github/workflows/build-linux.yml`)
@@ -180,6 +175,7 @@ The project provides related scripts (located in `scripts/`):
 - Windows EXE packaging (Fastforge): `scripts/build_windows_exe.bat`
 - Linux packaging (Fastforge, deb/appimage/rpm): `scripts/build_linux.sh pack`
 - macOS DMG packaging (Fastforge): `scripts/build_macos.sh`
+- iOS packaging (unsigned): `scripts/build_ios_nosign.sh`
 
 GitHub Actions also provides corresponding platform pipelines, see `.github/workflows/`:
 
@@ -188,6 +184,7 @@ GitHub Actions also provides corresponding platform pipelines, see `.github/work
 - `build-windows.yml`
 - `build-linux.yml`
 - `build-macos.yml`
+- `build-ios-nosign.yml`
 - `build-notify-docker-image.yml`
 
 ### Code Generation

@@ -6,14 +6,13 @@ import 'package:clipshare/app/data/repository/entity/tables/history.dart';
 import 'package:clipshare/app/data/repository/entity/tables/operation_record.dart';
 import 'package:clipshare/app/modules/history_module/history_controller.dart';
 import 'package:clipshare/app/modules/home_module/home_controller.dart';
-import 'package:clipshare/app/modules/search_module/search_controller.dart' as search_module;
 import 'package:clipshare/app/services/db_service.dart';
 import 'package:clipshare/app/services/device_service.dart';
 import 'package:clipshare/app/utils/global.dart';
-import 'package:clipshare/app/widgets/app_icon.dart';
-import 'package:clipshare/app/widgets/clip_content_view.dart';
-import 'package:clipshare/app/widgets/clip_tag_row_view.dart';
-import 'package:clipshare/app/widgets/clipboard_source_chip.dart';
+import 'package:clipshare/app/widgets/clip/app_icon.dart';
+import 'package:clipshare/app/widgets/clip/clip_content_view.dart';
+import 'package:clipshare/app/widgets/clip/clip_tag_row_view.dart';
+import 'package:clipshare/app/widgets/clip/clipboard_source_chip.dart';
 import 'package:clipshare/app/widgets/condition_widget.dart';
 import 'package:clipshare/app/widgets/rounded_chip.dart';
 import 'package:flutter/material.dart';
@@ -40,7 +39,6 @@ class _ClipboardDetailDrawerState extends State<ClipboardDetailDrawer> {
   final editController = TextEditingController();
   final dbService = Get.find<DbService>();
   final historyController = Get.find<HistoryController>();
-  final searchController = Get.find<search_module.SearchController>();
 
   @override
   void initState() {
@@ -123,7 +121,6 @@ class _ClipboardDetailDrawerState extends State<ClipboardDetailDrawer> {
                                         whereFunc(History item) => item.id == widget.clipData.data.id;
                                         callbackFunc(History item) => item.content = editController.text;
                                         historyController.updateData(whereFunc, callbackFunc);
-                                        searchController.updateData(whereFunc, callbackFunc);
                                       } else {
                                         Global.showSnackBarSuc(text: TranslationKey.updateFailed.tr, context: context);
                                       }
@@ -202,29 +199,33 @@ class _ClipboardDetailDrawerState extends State<ClipboardDetailDrawer> {
 
             ///剪贴板内容
             Expanded(
-              child: Padding(
-                padding: const EdgeInsets.only(top: 5, bottom: 5),
-                child: ConditionWidget(
-                  visible: modifyMode,
-                  replacement: ClipContentView(
-                    clipData: widget.clipData,
-                  ),
-                  child: SizedBox.expand(
-                    child: TextField(
-                      textAlignVertical: TextAlignVertical.top,
-                      textAlign: TextAlign.left,
-                      controller: editController,
-                      decoration: const InputDecoration(
-                        enabledBorder: OutlineInputBorder(
-                          borderSide: BorderSide(color: Colors.blue, width: 1),
+              child: Align(
+                alignment: AlignmentGeometry.topLeft,
+                child: Padding(
+                  padding: const EdgeInsets.only(top: 5, bottom: 5),
+                  child: ConditionWidget(
+                    visible: modifyMode,
+                    replacement: ClipContentView(
+                      clipData: widget.clipData,
+                      filePathSelectable: true,
+                    ),
+                    child: SizedBox.expand(
+                      child: TextField(
+                        textAlignVertical: TextAlignVertical.top,
+                        textAlign: TextAlign.left,
+                        controller: editController,
+                        decoration: const InputDecoration(
+                          enabledBorder: OutlineInputBorder(
+                            borderSide: BorderSide(color: Colors.blue, width: 1),
+                          ),
+                          focusedBorder: OutlineInputBorder(
+                            borderSide: BorderSide(color: Colors.blue, width: 1.5),
+                          ),
+                          border: OutlineInputBorder(),
                         ),
-                        focusedBorder: OutlineInputBorder(
-                          borderSide: BorderSide(color: Colors.blue, width: 1.5),
-                        ),
-                        border: OutlineInputBorder(),
+                        maxLines: null,
+                        expands: true,
                       ),
-                      maxLines: null,
-                      expands: true,
                     ),
                   ),
                 ),

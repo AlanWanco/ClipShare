@@ -1,7 +1,7 @@
 import 'dart:convert';
 
+import 'package:clipshare/app/data/enums/translation_key.dart';
 import 'package:clipshare/app/data/models/dev_info.dart';
-import 'package:clipshare/app/modules/device_module/device_controller.dart';
 import 'package:clipshare/app/services/config_service.dart';
 import 'package:clipshare/app/services/db_service.dart';
 import 'package:floor/floor.dart';
@@ -9,6 +9,8 @@ import 'package:get/get.dart';
 
 @entity
 class Device {
+  static String _selfGuid = "";
+
   ///设备id
   @primaryKey
   late String guid;
@@ -35,6 +37,23 @@ class Device {
   bool isPaired;
 
   String get name => customName == null || customName == "" ? devName : customName!;
+
+  /// 初始化当前 Flutter 引擎的本机设备标识，子窗口需在创建页面前通过启动参数调用。
+  ///
+  /// 此值仅用于运行时展示，不参与设备实体的持久化与跨窗口 JSON 传输。
+  static void initializeSelfGuid(String guid) {
+    _selfGuid = guid;
+  }
+
+  /// UI 展示名：存储/同步仍使用 [name] 的原始值，本机在展示层再按当前语言翻译。
+  String get displayName {
+    final rawName = name;
+    if (_selfGuid.isEmpty || guid != _selfGuid) {
+      return rawName;
+    }
+    final localizedName = TranslationKey.selfDeviceName.tr;
+    return localizedName == TranslationKey.selfDeviceName.name ? rawName : localizedName;
+  }
 
   static final unknown = Device.empty(devName: "unknown");
 

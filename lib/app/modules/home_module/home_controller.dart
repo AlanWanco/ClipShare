@@ -1,28 +1,30 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:clipshare/app/handlers/sync/script_module_sync_handler.dart';
+import 'package:clipshare/app/handlers/sync/rule_sync_handler.dart';
+import 'package:clipshare/app/modules/rules_module/rules_page.dart';
+import 'package:clipshare/app/services/jieba_segment_service.dart';
 import 'package:clipshare/app/services/transport/storage_service.dart';
 import 'package:clipshare/app/utils/extensions/number_extension.dart';
 import 'package:clipshare/app/utils/extensions/string_extension.dart';
 import 'package:clipshare/app/utils/global.dart';
 import 'package:clipshare/app/widgets/base/multi_drawer.dart';
+import 'package:clipshare/app/widgets/base/my_navigation_rail.dart';
 import 'package:clipshare_clipboard_listener/clipboard_manager.dart';
-import 'package:clipshare_clipboard_listener/enums.dart';
 import 'package:clipshare/app/data/enums/translation_key.dart';
 import 'package:clipshare/app/handlers/permission_handler.dart';
 import 'package:clipshare/app/handlers/sync/app_info_sync_handler.dart';
 import 'package:clipshare/app/handlers/sync/history_source_sync_handler.dart';
 import 'package:clipshare/app/handlers/sync/history_top_sync_handler.dart';
-import 'package:clipshare/app/handlers/sync/rules_sync_handler.dart';
 import 'package:clipshare/app/handlers/sync/tag_sync_handler.dart';
 import 'package:clipshare/app/listeners/multi_selection_pop_scope_disable_listener.dart';
 import 'package:clipshare/app/listeners/screen_opened_listener.dart';
 import 'package:clipshare/app/modules/clean_data_module/clean_data_controller.dart';
 import 'package:clipshare/app/modules/debug_module/debug_page.dart';
 import 'package:clipshare/app/modules/device_module/device_page.dart';
+import 'package:clipshare/app/modules/history_module/history_controller.dart';
 import 'package:clipshare/app/modules/history_module/history_page.dart';
-import 'package:clipshare/app/modules/search_module/search_controller.dart' as search_module;
-import 'package:clipshare/app/modules/search_module/search_page.dart';
 import 'package:clipshare/app/modules/settings_module/settings_controller.dart';
 import 'package:clipshare/app/modules/settings_module/settings_page.dart';
 import 'package:clipshare/app/modules/sync_file_module/sync_file_page.dart';
@@ -33,9 +35,9 @@ import 'package:clipshare/app/services/config_service.dart';
 import 'package:clipshare/app/services/transport/socket_service.dart';
 import 'package:clipshare/app/utils/app_update_info_util.dart';
 import 'package:clipshare/app/utils/constants.dart';
+import 'package:clipshare/app/utils/network_util.dart';
 import 'package:clipshare/app/utils/extensions/platform_extension.dart';
 import 'package:clipshare/app/utils/log.dart';
-import 'package:clipshare/app/utils/permission_helper.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
@@ -48,12 +50,24 @@ import 'package:zip_flutter/zip_flutter.dart';
 final _noScreenshot = NoScreenshot.instance;
 
 class HomeController extends GetxController with WidgetsBindingObserver, ScreenOpenedObserver {
+  String get tag => "HomeController";
   final appConfig = Get.find<ConfigService>();
+  final segmentService = Get.find<JiebaSegmentService>();
+  final sktService = Get.find<SocketService>();
   final settingsController = Get.find<SettingsController>();
   final storageService = Get.find<StorageService>();
-
   final androidChannelService = Get.find<AndroidChannelService>();
+
+  //多选监听
   final Set<MultiSelectionPopScopeDisableListener> _multiSelectionPopScopeDisableListeners = {};
+
+  //region 在小屏下首页中排除的导航栏和页面
+  static const _rulesNavItemKey = Key('rules');
+  static const _rulesPageKey = Key('rules');
+  static const _notShowNavItemKeys = [_rulesNavItemKey];
+  static const _notShowPageKeys = [_rulesPageKey];
+
+  //endregion
 
   //region 属性
   static const defaultDrawerWidth = 400.0;
@@ -64,68 +78,104 @@ class HomeController extends GetxController with WidgetsBindingObserver, ScreenO
   final homeScaffoldKey = GlobalKey<ScaffoldState>();
   final _index = 0.obs;
 
-  set index(value) => _index.value = value;
+  set index(value) {
+    if (_index.value != value) {
+      showingHistorySearch.value = false;
+    }
+    _index.value = value;
+  }
 
-  int get index => _index.value;
+  int get index {
+    var i = _index.value;
+    if (i >= pages.length) {
+      i = _index.value = pages.length - 1;
+    }
+    return i;
+  }
 
+  final _screenWidth = Get.width.obs;
+
+  set screenWidth(value) {
+    _screenWidth.value = value;
+  }
+
+  double get screenWidth => _screenWidth.value;
+
+  bool get isBigScreen => screenWidth >= Constants.smallScreenWidth;
   final _pages = List<GetView>.from([
     HistoryPage(),
     DevicePage(),
     SyncFilePage(),
+    RulesPage(key: _rulesPageKey),
     SettingsPage(),
   ]).obs;
 
+  List<GetView> get pages => isBigScreen ? _leftBarPages : _bottomNavPages;
+
   GetxController get currentPageController => pages[index].controller;
 
-  RxList<GetView> get pages => _pages;
+  bool get isHistoryPage => pages[index] is HistoryPage;
 
+  //所有的导航栏
   final _navBarItems = <BottomNavigationBarItem>[].obs;
 
-  RxList<BottomNavigationBarItem> get navBarItems => _navBarItems;
+  //小屏下底部导航菜单
+  List<GetView> get _bottomNavPages => _pages.where((item) => !_notShowPageKeys.contains(item.key)).toList();
 
-  List<NavigationRailDestination> get leftBarItems => _navBarItems
+  List<BottomNavigationBarItem> get bottomNavBarItems => _navBarItems.where((item) => !_notShowNavItemKeys.contains(item.key)).toList();
+
+  //大屏下侧边导航菜单
+  List<GetView> get _leftBarPages => _pages.toList();
+
+  List<MyNavigationItem> get leftBarItems => _navBarItems
       .map(
-        (item) => NavigationRailDestination(
+        (item) => MyNavigationItem(
           icon: item.icon,
           label: Text(item.label ?? ""),
+          tooltip: item.label!,
         ),
       )
       .toList();
 
   var leftMenuExtend = true.obs;
+
+  //region 同步处理器
   late TagSyncHandler _tagSyncer;
   late HistoryTopSyncHandler _historyTopSyncer;
   late HistorySourceSyncHandler _historySourceSyncer;
   late AppInfoSyncHandler _appInfoSyncer;
-  late RulesSyncHandler _rulesSyncer;
+  late RuleSyncHandler _ruleSyncer;
+  late ScriptModuleSyncHandler _scriptModuleSyncer;
+
+  //endregion
+
+  //网络监听器
   late StreamSubscription _networkListener;
   DateTime? pausedTime;
+
+  //软件logo
   final logoImg = Image.asset(
     Constants.logoPngPath,
     width: 24,
     height: 24,
   );
 
-  String get tag => "HomeController";
-
-  final _screenWidth = Get.width.obs;
-
-  set screenWidth(value) {
-    _screenWidth.value = value;
-    _initSearchPageShow();
-  }
-
-  double get screenWidth => _screenWidth.value;
-
-  bool get isBigScreen => screenWidth >= Constants.smallScreenWidth;
-
-  final sktService = Get.find<SocketService>();
+  //是否拖拽中
   final dragging = false.obs;
+
+  //展示待发送文件的遮罩页面
   final showPendingItemsDetail = false.obs;
+
+  //是否分词中，用于控制是否展示分词遮罩
   final isSegmenting = false.obs;
+
+  //需要分词的文本
   final segmentText = ''.obs;
 
+  //是否是文件同步页面
   bool get isSyncFilePage => _pages[index] is SyncFilePage;
+
+  final showingHistorySearch = false.obs;
 
   final drawer = MultiDrawerController();
 
@@ -152,7 +202,6 @@ class HomeController extends GetxController with WidgetsBindingObserver, ScreenO
     if (Platform.isAndroid) {
       _initAndroid();
     }
-    _initSearchPageShow();
     if (PlatformExt.isDesktop) {
       clipboardManager.startListening();
     } else {
@@ -167,6 +216,7 @@ class HomeController extends GetxController with WidgetsBindingObserver, ScreenO
           });
     }
     AppUpdateInfoUtil.showUpdateInfo(debounce: true);
+    appConfig.setSystemUIOverlayAutoStyle();
   }
 
   @override
@@ -186,7 +236,8 @@ class HomeController extends GetxController with WidgetsBindingObserver, ScreenO
     _historyTopSyncer.dispose();
     _historySourceSyncer.dispose();
     _appInfoSyncer.dispose();
-    _rulesSyncer.dispose();
+    _ruleSyncer.dispose();
+    _scriptModuleSyncer.dispose();
     _networkListener.cancel();
     drawer.dispose();
     super.onClose();
@@ -195,7 +246,7 @@ class HomeController extends GetxController with WidgetsBindingObserver, ScreenO
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
-    Log.debug(tag, "AppLifecycleState $state");
+    logger.debug(tag, "AppLifecycleState $state");
     switch (state) {
       case AppLifecycleState.resumed:
         AppUpdateInfoUtil.showUpdateInfo(debounce: true);
@@ -206,7 +257,7 @@ class HomeController extends GetxController with WidgetsBindingObserver, ScreenO
         var now = DateTime.now();
         // 计算秒数差异
         int offsetMinutes = now.difference(pausedTime!).inMinutes;
-        Log.debug(
+        logger.debug(
           tag,
           "offsetMinutes $offsetMinutes,authDurationSeconds $authDurationSeconds",
         );
@@ -220,7 +271,7 @@ class HomeController extends GetxController with WidgetsBindingObserver, ScreenO
       case AppLifecycleState.paused:
       case AppLifecycleState.inactive:
         if (pausedTime != null) {
-          Log.debug(tag, "$state skip!!");
+          logger.debug(tag, "$state skip!!");
           break;
         }
         if (appConfig.authenticating.value) {
@@ -247,7 +298,8 @@ class HomeController extends GetxController with WidgetsBindingObserver, ScreenO
     _historyTopSyncer = HistoryTopSyncHandler();
     _historySourceSyncer = HistorySourceSyncHandler();
     _appInfoSyncer = AppInfoSyncHandler();
-    _rulesSyncer = RulesSyncHandler();
+    _ruleSyncer = RuleSyncHandler();
+    _scriptModuleSyncer = ScriptModuleSyncHandler();
     //进入主页面后标记为不是第一次进入
     if (appConfig.firstStartup) {
       appConfig.setNotFirstStartup();
@@ -270,7 +322,7 @@ class HomeController extends GetxController with WidgetsBindingObserver, ScreenO
     //检查权限
     var permHandlers = [
       FloatPermHandler(),
-      if (appConfig.workingMode == EnvironmentType.shizuku && !appConfig.ignoreShizuku) ShizukuPermHandler(),
+      // if (appConfig.workingMode == EnvironmentType.shizuku && !appConfig.ignoreShizuku) ShizukuPermHandler(),
       NotifyPermHandler(),
     ];
     for (var handler in permHandlers) {
@@ -279,10 +331,6 @@ class HomeController extends GetxController with WidgetsBindingObserver, ScreenO
           handler.request();
         }
       });
-    }
-    //如果开启短信同步且有短信权限则启动短信监听
-    if (appConfig.enableSmsSync && await PermissionHelper.testAndroidReadSms()) {
-      androidChannelService.startSmsListen();
     }
     androidChannelService.showOnRecentTasks(appConfig.showOnRecentTasks);
     if (appConfig.useAuthentication) {
@@ -297,70 +345,58 @@ class HomeController extends GetxController with WidgetsBindingObserver, ScreenO
 
   ///初始化导航栏
   void initNavBarItems() {
+    const size = 20.0;
     final items = [
       BottomNavigationBarItem(
-        icon: const Icon(Icons.history),
+        icon: Icon(
+          Icons.history,
+          size: size,
+        ),
         label: TranslationKey.historyRecord.tr,
       ),
       BottomNavigationBarItem(
-        icon: const Icon(Icons.devices_rounded),
+        icon: Icon(
+          Icons.devices_rounded,
+          size: size,
+        ),
         label: TranslationKey.myDevice.tr,
       ),
       BottomNavigationBarItem(
-        icon: const Icon(Icons.sync_alt_outlined),
+        icon: Icon(
+          Icons.sync_alt_outlined,
+          size: size,
+        ),
         label: TranslationKey.fileTransfer.tr,
       ),
       BottomNavigationBarItem(
-        icon: const Icon(Icons.settings),
+        key: _rulesNavItemKey,
+        icon: Icon(
+          Icons.code_outlined,
+          size: size,
+        ),
+        label: TranslationKey.rulesManagement.tr,
+      ),
+      BottomNavigationBarItem(
+        icon: Icon(
+          Icons.settings,
+          size: size,
+        ),
         label: TranslationKey.appSettings.tr,
       ),
     ];
     assert(() {
       items.add(
-        const BottomNavigationBarItem(
-          icon: Icon(Icons.bug_report_outlined),
+        BottomNavigationBarItem(
+          icon: Icon(
+            Icons.bug_report_outlined,
+            size: size,
+          ),
           label: "Debug",
         ),
       );
       return true;
     }());
     _navBarItems.value = items;
-  }
-
-  void _initSearchPageShow() {
-    var searchNavBarIdx = _navBarItems.indexWhere((element) => (element.icon as Icon).icon == Icons.search);
-    final searchPageIdx = _pages.indexWhere((p) => p is SearchPage);
-    var settingNavBarIdx = _navBarItems.indexWhere((e) => (e.icon as Icon).icon == Icons.settings);
-    var hasSearchPage = searchPageIdx != -1;
-    var hasSearchNavBar = searchNavBarIdx != -1;
-    if (isBigScreen) {
-      //大屏幕
-      //如果没有搜索页则加入
-      if (!hasSearchPage) {
-        _pages.insert(
-          settingNavBarIdx,
-          SearchPage(),
-        );
-      }
-      if (!hasSearchNavBar) {
-        _navBarItems.insert(
-          settingNavBarIdx,
-          BottomNavigationBarItem(
-            icon: const Icon(Icons.search),
-            label: TranslationKey.bottomNavigationSearchHistoryBarItemLabel.tr,
-          ),
-        );
-      }
-    } else {
-      //如果有搜索页则移除
-      if (hasSearchPage) {
-        _pages.removeAt(searchPageIdx);
-      }
-      //如果有搜索导航栏且则移除
-      if (hasSearchNavBar) {
-        _navBarItems.removeAt(searchNavBarIdx);
-      }
-    }
   }
 
   //endregion
@@ -387,17 +423,13 @@ class HomeController extends GetxController with WidgetsBindingObserver, ScreenO
     );
   }
 
-  ///导航至搜索页面
-  void gotoSearchPage(String? devId, String? tagName) {
-    final searchController = Get.find<search_module.SearchController>();
-    searchController.loadFromExternalParams(devId, tagName);
-    searchController.refreshData();
-    if (isBigScreen) {
-      var i = _navBarItems.indexWhere((element) => (element.icon as Icon).icon == Icons.search);
+  ///显示历史页面并应用过滤条件
+  void showHistoryWithFilter(String? devId, String? tagName) {
+    final historyController = Get.find<HistoryController>();
+    historyController.loadFromExternalParams(devId, tagName);
+    final i = _navBarItems.indexWhere((element) => (element.icon as Icon).icon == Icons.history);
+    if (i >= 0) {
       _index.value = i;
-      pages[i] = SearchPage();
-    } else {
-      Get.toNamed(Routes.SEARCH);
     }
   }
 
@@ -423,6 +455,18 @@ class HomeController extends GetxController with WidgetsBindingObserver, ScreenO
     }
   }
 
+  /// 处理页面级 Esc 快捷键；抽屉是覆盖层，应优先于页面多选状态关闭。
+  void handleEscapeShortcut() {
+    if (!drawer.isEmpty) {
+      drawer.popWithAnimation();
+      return;
+    }
+    if (appConfig.isMultiSelectionMode(currentPageController)) {
+      appConfig.disableMultiSelectionMode(true);
+      notifyMultiSelectionPopScopeDisable();
+    }
+  }
+
   void registerMultiSelectionPopScopeDisableListener(
     MultiSelectionPopScopeDisableListener listener,
   ) {
@@ -440,9 +484,19 @@ class HomeController extends GetxController with WidgetsBindingObserver, ScreenO
   Timer? _networkChangedTimer;
   Future<void> _onNetworkChanged(ConnectivityResult result) async {
     _networkChangedTimer?.cancel();
-    _networkChangedTimer = Timer(1500.ms, (){
-      Log.debug(tag, "网络变化 -> ${result.name}");
+    _networkChangedTimer = Timer(1500.ms, () {
+      logger.debug(tag, "网络变化 -> ${result.name}");
       final lastNetwork = appConfig.currentNetWorkType.value;
+      final keepConnections = NetworkUtil.shouldKeepConnections(
+        keepConnectionsOnNetworkSwitch: appConfig.keepConnectionsOnNetworkSwitch,
+        previous: lastNetwork,
+        current: result,
+      );
+      // 仅在无需处理 WiFi/移动互切和断网恢复时保留现有连接，避免无意义的主动断开重连。
+      if (keepConnections) {
+        appConfig.currentNetWorkType.value = result;
+        return;
+      }
       //网络变化前的状态，非无网络状态,断开中转服务连接
       if (lastNetwork != ConnectivityResult.none) {
         sktService.disConnectAllConnections();
@@ -479,9 +533,9 @@ class HomeController extends GetxController with WidgetsBindingObserver, ScreenO
 
   ///显示分词信息
   Future<void> showSegmentWordsView(BuildContext context, String content) async {
-    final enabled = await appConfig.checkJiebaSegment();
+    final enabled = await segmentService.checkJiebaSegment(context);
     if (!enabled) {
-      final dirPath = await appConfig.getJiebaSegmentFileDirPath();
+      final dirPath = await segmentService.getJiebaSegmentFileDirPath();
       DialogController? dialog;
       dialog = await Global.showTipsDialog(
         context: context,
@@ -506,7 +560,7 @@ class HomeController extends GetxController with WidgetsBindingObserver, ScreenO
             onFinished: (success) async {
               try {
                 if (success) {
-                  final extraTo = await appConfig.getJiebaSegmentFileDirPath();
+                  final extraTo = await segmentService.getJiebaSegmentFileDirPath();
                   await ZipFile.openAndExtractAsync(downPath, extraTo);
                   Global.showSnackBarSuc(text: TranslationKey.jiebaFileInstallSuccess.tr, context: Get.context);
                   await File(downPath).delete();

@@ -5,8 +5,8 @@ import 'package:clipshare/app/handlers/sync/missing_data_sync_handler.dart';
 import 'package:clipshare/app/handlers/sync/abstract_data_sender.dart';
 import 'package:clipshare/app/modules/home_module/home_controller.dart';
 import 'package:clipshare/app/utils/extensions/number_extension.dart';
-import 'package:clipshare/app/widgets/clipboard_source_chip.dart';
-import 'package:clipshare/app/widgets/clip_data_copy_icon_button.dart';
+import 'package:clipshare/app/widgets/clip/clipboard_source_chip.dart';
+import 'package:clipshare/app/widgets/clip/clip_data_copy_icon_button.dart';
 import 'package:clipshare_clipboard_listener/clipboard_manager.dart';
 import 'package:clipshare_clipboard_listener/enums.dart';
 import 'package:clipshare/app/data/enums/module.dart';
@@ -17,7 +17,6 @@ import 'package:clipshare/app/data/models/clip_data.dart';
 import 'package:clipshare/app/data/repository/entity/tables/history.dart';
 import 'package:clipshare/app/data/repository/entity/tables/operation_record.dart';
 import 'package:clipshare/app/modules/history_module/history_controller.dart';
-import 'package:clipshare/app/modules/search_module/search_controller.dart' as search_module;
 import 'package:clipshare/app/modules/views/modify_history_content_page.dart';
 import 'package:clipshare/app/services/channels/android_channel.dart';
 import 'package:clipshare/app/services/channels/clip_channel.dart';
@@ -26,11 +25,12 @@ import 'package:clipshare/app/services/config_service.dart';
 import 'package:clipshare/app/services/db_service.dart';
 import 'package:clipshare/app/services/transport/socket_service.dart';
 import 'package:clipshare/app/utils/extensions/file_extension.dart';
+import 'package:clipshare/app/utils/extensions/history_data_extension.dart';
 import 'package:clipshare/app/utils/global.dart';
 import 'package:clipshare/app/utils/log.dart';
-import 'package:clipshare/app/widgets/app_icon.dart';
-import 'package:clipshare/app/widgets/clip_content_view.dart';
-import 'package:clipshare/app/widgets/clip_tag_row_view.dart';
+import 'package:clipshare/app/widgets/clip/app_icon.dart';
+import 'package:clipshare/app/widgets/clip/clip_content_view.dart';
+import 'package:clipshare/app/widgets/clip/clip_tag_row_view.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:open_file_plus/open_file_plus.dart';
@@ -63,7 +63,6 @@ class ClipDetailDialogState extends State<ClipDetailDialog> {
   final sktService = Get.find<SocketService>();
   final dbService = Get.find<DbService>();
   final historyController = Get.find<HistoryController>();
-  final searchController = Get.find<search_module.SearchController>();
   final androidChannelService = Get.find<AndroidChannelService>();
   final clipChannelService = Get.find<ClipChannelService>();
 
@@ -132,7 +131,7 @@ class ClipDetailDialogState extends State<ClipDetailDialog> {
                       tooltip: widget.clip.data.top ? TranslationKey.cancelTopUp.tr : TranslationKey.topUp.tr,
                     ),
                     Visibility(
-                      visible: widget.clip.isImage || widget.clip.isText,
+                      visible: widget.clip.data.canCopy,
                       child: ClipDataCopyIconButton(clip: widget.clip),
                     ),
                     Visibility(
@@ -189,7 +188,6 @@ class ClipDetailDialogState extends State<ClipDetailDialog> {
                                     whereFunc(History item) => item.id == widget.clip.data.id;
                                     callbackFunc(History item) => item.content = newData;
                                     historyController.updateData(whereFunc, callbackFunc);
-                                    searchController.updateData(whereFunc, callbackFunc);
                                   } else {
                                     Global.showSnackBarSuc(text: TranslationKey.updateFailed.tr, context: Get.context!);
                                   }

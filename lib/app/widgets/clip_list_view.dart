@@ -1,8 +1,10 @@
 import 'dart:io';
 import 'dart:math';
 
-import 'package:clipshare/app/data/enums/history_content_type.dart';
+import 'package:clipshare/app/data/models/keyboard_shortcut.dart';
+import 'package:clipshare/app/utils/extensions/history_data_extension.dart';
 import 'package:clipshare/app/utils/extensions/number_extension.dart';
+import 'package:clipshare/app/widgets/base/custom_keyboard_listener.dart';
 import 'package:clipshare_clipboard_listener/clipboard_manager.dart';
 import 'package:clipshare_clipboard_listener/enums.dart';
 import 'package:clipshare/app/data/enums/module.dart';
@@ -25,7 +27,9 @@ import 'package:clipshare/app/services/transport/socket_service.dart';
 import 'package:clipshare/app/utils/constants.dart';
 import 'package:clipshare/app/utils/global.dart';
 import 'package:clipshare/app/utils/log.dart';
-import 'package:clipshare/app/widgets/clip_data_card.dart';
+import 'package:clipshare/app/widgets/clip/clip_data_card.dart';
+import 'package:clipshare/app/widgets/clip/clip_multi_selection_fab.dart';
+import 'package:clipshare/app/widgets/clip/clip_multi_selection_controller.dart';
 import 'package:clipshare/app/widgets/dialog/clip_detail_dialog.dart';
 import 'package:clipshare/app/widgets/condition_widget.dart';
 import 'package:flutter/gestures.dart';
@@ -34,13 +38,18 @@ import 'package:flutter/services.dart';
 import 'package:flutter_expandable_fab/flutter_expandable_fab.dart';
 import 'package:flutter_staggered_grid_view/flutter_staggered_grid_view.dart';
 import 'package:get/get.dart';
-import 'package:material_design_icons_flutter/material_design_icons_flutter.dart';
+
+import 'package:flutter_material_design_icons/flutter_material_design_icons.dart';
 import 'package:open_file_plus/open_file_plus.dart';
 
 import 'empty_content.dart';
 
+part 'clip_list_view/clip_list_body.dart';
+part 'clip_list_view/clip_list_fab.dart';
+part 'clip_list_view/clip_list_item_renderer.dart';
+
 class ClipListView extends StatefulWidget {
-  final RxList<ClipData> list;
+  final List<ClipData> list;
   final void Function() onRefreshData;
   final bool enableRouteSearch;
   final BorderRadiusGeometry? detailBorderRadius;
@@ -49,6 +58,7 @@ class ClipListView extends StatefulWidget {
   final void Function(int id) onRemove;
   final bool imageMasonryGridViewLayout;
   final GetxController parentController;
+  final EdgeInsetsGeometry? padding;
 
   const ClipListView({
     super.key,
@@ -61,16 +71,20 @@ class ClipListView extends StatefulWidget {
     required this.onRemove,
     this.imageMasonryGridViewLayout = false,
     required this.parentController,
+    this.padding,
   });
 
   @override
   State<ClipListView> createState() => ClipListViewState();
 }
 
-class ClipListViewState extends State<ClipListView> with WidgetsBindingObserver implements MultiSelectionPopScopeDisableListener {
+class ClipListViewState extends State<ClipListView>
+    with WidgetsBindingObserver
+    implements MultiSelectionPopScopeDisableListener {
   final ScrollController _scrollController = ScrollController();
   final _scrollPhysics = const AlwaysScrollableScrollPhysics();
   int? _minId;
+  int? _lastListTailId;
   final appConfig = Get.find<ConfigService>();
   final sktService = Get.find<SocketService>();
   final dbService = Get.find<DbService>();
@@ -82,13 +96,14 @@ class ClipListViewState extends State<ClipListView> with WidgetsBindingObserver 
   static bool _loadingNewData = false;
   var _showBackToTopButton = false;
   final String tag = "ClipListView";
-  var _selectMode = false;
-  final _selectedItems = <ClipData>{};
+  final _selectionController = ClipMultiSelectionController();
   MenuController codeMenuController = MenuController();
 
-  bool get isBigScreen => MediaQuery.of(context).size.width >= Constants.smallScreenWidth;
+  bool get isBigScreen =>
+      MediaQuery.of(context).size.width >= Constants.smallScreenWidth;
 
-  bool get showHistoryRight => MediaQuery.of(context).size.width >= Constants.showHistoryRightWidth;
+  bool get showHistoryRight =>
+      MediaQuery.of(context).size.width >= Constants.showHistoryRightWidth;
 
   @override
   void initState() {
@@ -96,19 +111,28 @@ class ClipListViewState extends State<ClipListView> with WidgetsBindingObserver 
     _loadingNewData = false;
     if (widget.list.isNotEmpty) {
       _minId = widget.list.last.data.id;
+      _lastListTailId = _minId;
     }
-    //监听生命周期
     WidgetsBinding.instance.addObserver(this);
     final homeController = Get.find<HomeController>();
     homeController.registerMultiSelectionPopScopeDisableListener(this);
-    // 监听滚动事件
     _scrollController.addListener(_scrollListener);
+  }
+
+  @override
+  void didUpdateWidget(covariant ClipListView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final tailId = widget.list.isEmpty ? null : widget.list.last.data.id;
+    if (_lastListTailId != tailId) {
+      _lastListTailId = tailId;
+      _minId = tailId;
+      _selectionController.removeMissingItems(widget.list);
+    }
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    // 释放资源
     _scrollController.dispose();
     final homeController = Get.find<HomeController>();
     homeController.removeMultiSelectionPopScopeDisableListener(this);
@@ -123,7 +147,6 @@ class ClipListViewState extends State<ClipListView> with WidgetsBindingObserver 
     }
   }
 
-  ///加载更多数据
   void _loadMoreData() {
     if (_loadingNewData || _minId == null) {
       return;
@@ -131,13 +154,16 @@ class ClipListViewState extends State<ClipListView> with WidgetsBindingObserver 
     _loadingNewData = true;
     Future<List<ClipData>> f;
     if (widget.onLoadMoreData == null) {
-      f = dbService.historyDao.getHistoriesPage(appConfig.userId, _minId!).then((lst) => ClipData.fromList(lst));
+      f = dbService.historyDao
+          .getHistoriesPage(appConfig.userId, _minId!, [])
+          .then((lst) => ClipData.fromList(lst));
     } else {
       f = widget.onLoadMoreData!.call(_minId!);
     }
     f.then((List<ClipData> list) {
       if (list.isNotEmpty) {
         _minId = list[list.length - 1].data.id;
+        _lastListTailId = _minId;
         widget.list.addAll(list);
         removeDuplicates();
         _sortList();
@@ -148,28 +174,30 @@ class ClipListViewState extends State<ClipListView> with WidgetsBindingObserver 
     });
   }
 
-  ///移除重复项
   void removeDuplicates() {
     Map<int, ClipData> map = {};
     for (var clip in widget.list) {
       map[clip.data.id] = clip;
     }
-    widget.list.value = map.values.toList(growable: true);
+    widget.list
+      ..clear()
+      ..addAll(map.values);
   }
 
-  ///滚动监听
   void _scrollListener() {
     if (_scrollController.offset == 0) {
       Future.delayed(100.ms, () {
         var tmpList = widget.list.sublist(0, min(widget.list.length, 100));
-        widget.list.value = tmpList;
+        widget.list
+          ..clear()
+          ..addAll(tmpList);
         if (tmpList.isNotEmpty) {
           _minId = tmpList.last.data.id;
+          _lastListTailId = _minId;
         }
         setState(() {});
       });
     }
-    // 判断是否快要滑动到底部
     if (_scrollController.position.extentAfter <= 200 && !_loadingNewData) {
       _loadMoreData();
     }
@@ -188,470 +216,208 @@ class ClipListViewState extends State<ClipListView> with WidgetsBindingObserver 
     }
   }
 
-  ///排序 list
   void _sortList() {
     widget.list.sort((a, b) => b.data.compareTo(a.data));
     setState(() {});
   }
 
-  ///删除项目
-  Future<void> deleteItem(ClipData item, {bool deleteFile = false, bool onlyDeleteLocal = false}) async {
-    await dbService.historyDao.deleteByCascade(item.data.id);
-    widget.onRemove(item.data.id);
-    final historyController = Get.find<HistoryController>();
-    //通知子窗体
-    historyController.notifyHistoryWindow();
-    if(!onlyDeleteLocal) {
-      //添加删除记录
-      var opRecord = OperationRecord.fromSimple(
-        Module.history,
-        OpMethod.delete,
-        item.data.id,
-      );
-      //通知其他设备
-      dbService.opRecordDao.addAndNotify(opRecord);
-    }
-    if (!item.isImage && !item.isFile) {
-      return;
-    }
-    //如果是图片，删除并更新媒体库
-    final path = item.data.content;
-    var file = File(path);
-    if (!file.existsSync()) return;
-    file.deleteSync();
-    if (item.isImage && Platform.isAndroid) {
-      androidChannelService.notifyMediaScan(path);
+  /// 删除单条历史记录，并在用户直接触发删除时显示加载弹窗以避免长耗时文件删除造成无响应感。
+  Future<void> deleteItem(
+    ClipData item, {
+    bool deleteFile = false,
+    bool onlyDeleteLocal = false,
+    bool showLoading = true,
+  }) async {
+    DialogController? loadingDialog;
+    var deleteSuccess = false;
+    try {
+      if (showLoading) {
+        loadingDialog = Global.showLoadingDialog(
+          context: context,
+          loadingText: TranslationKey.deleting.tr,
+        );
+      }
+      await dbService.historyDao.deleteByCascade(item.data.id);
+      widget.onRemove(item.data.id);
+      final historyController = Get.find<HistoryController>();
+      historyController.notifyHistoryWindow();
+      if (!onlyDeleteLocal) {
+        var opRecord = OperationRecord.fromSimple(
+          Module.history,
+          OpMethod.delete,
+          item.data.id,
+        );
+        dbService.opRecordDao.addAndNotify(opRecord);
+      }
+      if (deleteFile && (item.isImage || item.isFile)) {
+        final path = item.data.content;
+        var file = File(path);
+        if (await file.exists()) {
+          await file.delete();
+          if (item.isImage && Platform.isAndroid) {
+            androidChannelService.notifyMediaScan(path);
+          }
+        }
+      }
+      deleteSuccess = true;
+    } catch (err, stack) {
+      logger.error(tag, err, stack);
+      if (!showLoading) {
+        rethrow;
+      }
+      await loadingDialog?.close();
+      loadingDialog = null;
+      if (mounted) {
+        Global.showSnackBarWarn(
+          context: context,
+          text: TranslationKey.deletionFailed.tr,
+        );
+      }
+    } finally {
+      await loadingDialog?.close();
+      if (deleteSuccess && showLoading && mounted) {
+        Global.showSnackBarSuc(
+          context: context,
+          text: TranslationKey.deleteSuccess.tr,
+        );
+      }
     }
   }
 
-  ///进入选中状态
-  void _enableSelectMode(){
-    if(_selectMode){
+  void _enableSelectMode() {
+    if (_selectionController.enabled) {
       return;
     }
     appConfig.enableMultiSelectionMode(
       controller: widget.parentController,
     );
-    _selectMode = true;
+    _selectionController.enable();
     setState(() {});
   }
 
-  void _toggleSelectState(ClipData data){
-    if(!_selectMode){
+  void _toggleSelectState(ClipData data) {
+    if (!_selectionController.enabled) {
       return;
     }
-    if (_selectedItems.contains(data)) {
-      _selectedItems.remove(data);
-    } else {
-      _selectedItems.add(data);
-    }
+    _selectionController.toggleItem(data);
     setState(() {});
   }
 
-  ///渲染列表项
-  Widget renderItem(int i) {
-    var item = widget.list[i];
-    onRemoveClicked(ClipData item) {
-      final onlyDeleteLocal = false.obs;
-      Global.showTipsDialog(
-        context: context,
-        text: TranslationKey.deleteRecordAck.tr,
-        title: TranslationKey.deleteTips.tr,
-        customWidget: Container(
-          margin: 10.insetT,
-          child: Obx(() {
-            return CheckboxListTile(
-                title: Text(TranslationKey.onlyLocal.tr),
-                value: onlyDeleteLocal.value,
-                onChanged: (selected) {
-                  onlyDeleteLocal.value = selected ?? false;
-                });
-          }),
-        ),
-        showCancel: true,
-        showNeutral: item.isFile || item.isImage,
-        neutralText: TranslationKey.deleteWithFiles.tr,
-        onOk: () => deleteItem(item, onlyDeleteLocal: onlyDeleteLocal.value),
-        onNeutral: () => deleteItem(item, deleteFile: true, onlyDeleteLocal: onlyDeleteLocal.value),
-      );
+  void _refreshState() {
+    setState(() {});
+  }
+
+  /// 退出多选模式；快捷键和 FAB 共用该入口，避免不同触发方式产生状态差异。
+  void _exitSelectionMode() {
+    if (!_selectionController.enabled) {
+      return;
     }
-    showClipBottomSheet(ClipData data){
-      showModalBottomSheet(
-        isScrollControlled: true,
-        clipBehavior: Clip.antiAlias,
-        context: context,
-        elevation: 100,
-        builder: (BuildContext context) {
-          return SafeArea(
-            child: ClipDetailDialog(
-              dlgContext: context,
-              clip: data,
-              onUpdate: widget.onUpdate,
-              onRemoveClicked: onRemoveClicked,
-            ),
+    _cancelSelectionMode();
+    appConfig.disableMultiSelectionMode(true);
+    _refreshState();
+  }
+
+  /// 打开多选删除确认弹窗；Delete 快捷键与删除 FAB 共用该入口。
+  Future<void> _showSelectedDeleteDialog() async {
+    if (!_selectionController.enabled ||
+        _selectionController.selectedItems.isEmpty) {
+      return;
+    }
+    DialogController? dialog;
+    final onlyDeleteLocal = false.obs;
+    dialog = await Global.showTipsDialog(
+      context: context,
+      text: TranslationKey.multiDeleteAsk.trParams({
+        "length": _selectionController.selectedCount.toString(),
+      }),
+      showCancel: true,
+      autoDismiss: false,
+      customWidget: Container(
+        margin: 10.insetT,
+        child: Obx(() {
+          return CheckboxListTile(
+            title: Text(TranslationKey.onlyLocal.tr),
+            value: onlyDeleteLocal.value,
+            onChanged: (selected) {
+              onlyDeleteLocal.value = selected ?? false;
+            },
           );
-        },
-      );
-    }
-
-    return ClipDataCard(
-      clip: widget.list[i],
-      imageMode: widget.imageMasonryGridViewLayout,
-      routeToSearchOnClickChip: widget.enableRouteSearch,
-      selectMode: _selectMode,
-      selected: _selectedItems.contains(item),
-      onTap: () {
-        if (_selectMode) {
-          _toggleSelectState(item);
-        } else {
-          var data = widget.list[i];
-          if (isBigScreen) {
-            homeCtrl.pushDrawer(
-              widget: ClipboardDetailDrawer(clipData: data),
-              beforeClosed: () {
-                homeCtrl.resetDrawerWidth();
-                return true;
-              },
-            );
-          } else {
-            showClipBottomSheet(data);
-          }
-        }
+        }),
+      ),
+      showNeutral: _selectionController.selectedItems.any((item) => item.isFile),
+      neutralText: TranslationKey.deleteWithFiles.tr,
+      onCancel: () {
+        dialog?.close();
       },
-      onToggleSelected: (){
-        if (!_selectMode) {
-          _enableSelectMode();
-        }
-        HapticFeedback.mediumImpact();
-        //如果为空或已经选中，直接切换选择状态
-        if (_selectedItems.isEmpty || _selectedItems.contains(item)) {
-          _toggleSelectState(item);
-          return;
-        }
-        //不为空，区间选择确定区间元素
-        var reverse = false;
-        var list = List.from(widget.list);
-        var start = -1;
-        var end = -1;
-        for (var i = 0; i < list.length; i++) {
-          //判断正序还是逆序区间
-          if (!reverse && list[i] == item && start == -1) {
-            //逆序区间
-            reverse = true;
-          }
-          if (reverse) {
-            //逆序区间
-            if (list[i] == item) {
-              start = i;
-            } else if (_selectedItems.contains(list[i])) {
-              end = i;
-            }
-          } else {
-            //正序区间
-            if (_selectedItems.contains(list[i]) && start == -1) {
-              start = i;
-            }
-            if (list[i] == item && start != -1) {
-              end = i;
-              break;
-            }
-          }
-        }
-        for (var i = start; i <= end; i++) {
-          _selectedItems.add(list[i]);
-        }
-        setState(() {
-
-        });
-      },
-      onMoreActionsTap: (){
-        showClipBottomSheet(widget.list[i]);
-      },
-      onLongPress: () {
-        _enableSelectMode();
-        _selectedItems.add(item);
-        HapticFeedback.mediumImpact();
-      },
-      onDoubleTap: () async {
-        if (widget.list[i].isFile) {
-          await OpenFile.open(widget.list[i].data.content);
-          return;
-        }
-        History history = widget.list[i].data;
-        var type = ClipboardContentType.parse(history.type);
-        final res = await clipboardManager.copy(type, history.content);
-        if (res) {
-          Global.showSnackBarSuc(context: context, text: TranslationKey.copySuccess.tr);
-        } else {
-          Global.showSnackBarErr(context: context, text: TranslationKey.copyFailed.tr);
-        }
-      },
-      onUpdate: widget.onUpdate,
-      onRemoveClicked: onRemoveClicked,
+      onNeutral: () => _deleteSelectedItems(true, onlyDeleteLocal.value),
+      onOk: () => _deleteSelectedItems(false, onlyDeleteLocal.value),
     );
   }
 
-  FloatingActionButton _fabButtonFun({
-    required VoidCallback? onPressed,
-    String? tooltip,
-    Widget? child,
-  }) {
-    final bgColor = onPressed == null ? Colors.grey[400]: null;
-    if (appConfig.isSmallScreen || true){
-      return FloatingActionButton(
-        onPressed: onPressed,
-        tooltip: tooltip,
-        child: child,
-        backgroundColor: bgColor,
+  /// 删除当前多选数据；确认弹窗、FAB 与快捷键最终都复用这里的删除流程。
+  Future<void> _deleteSelectedItems(bool deleteFile, [bool onlyDeleteLocal = false]) async {
+    Get.back();
+    final loadingDialog = Global.showLoadingDialog(
+      context: context,
+      loadingText: TranslationKey.deleting.tr,
+    );
+    try {
+      for (var item in _selectionController.selectedItems) {
+        await deleteItem(
+          item,
+          deleteFile: deleteFile,
+          onlyDeleteLocal: onlyDeleteLocal,
+          showLoading: false,
+        );
+      }
+      if (!mounted) {
+        return;
+      }
+      Global.showSnackBarSuc(
+        context: context,
+        text: TranslationKey.deleteCompleted.tr,
       );
-    }else{
-      return FloatingActionButton.small(
-        onPressed: onPressed,
-        tooltip: tooltip,
-        child: child,
-        backgroundColor: bgColor,
-      );
+      appConfig.disableMultiSelectionMode(true);
+      _cancelSelectionMode();
+    } catch (err, stack) {
+      logger.error(tag, err, stack);
+      await loadingDialog.close();
+      if (mounted) {
+        Global.showSnackBarWarn(
+          context: context,
+          text: TranslationKey.deletionFailed.tr,
+        );
+      }
+    } finally {
+      await loadingDialog.close();
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    const fabSize = ExpandableFabSize.regular;
-    const distance = 145.0;
-    final multiSelected = _selectMode && _selectedItems.length > 1;
-    final fab = <Widget>[
-      Visibility(
-        visible: _selectMode,
-        child: Positioned(
-          right: 85,
-          bottom: 15,
-          child: Container(
-            height: 48,
-            decoration: BoxDecoration(
-              color: const Color(0xffc3e8ff),
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Center(
-              child:
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 10),
-                child: Text(
-                  "${_selectedItems.length} / ${widget.list.length}",
-                  style: TextStyle(
-                    fontSize: 20,
-                    color: appConfig.currentIsDarkMode
-                        ? Colors.white
-                        : Colors.black87,
-                  ),
-                ),
-            ),),
-          ),),
-      ),
-      Visibility(
-        visible: _showBackToTopButton,
-        child: AnimatedPositioned(
-          right: 15,
-          bottom: _selectMode ? 85 : 15,
-          duration: 300.ms,
-          child: Tooltip(
-            message: TranslationKey.backToTop.tr,
-            child: FloatingActionButton(
-              onPressed: () {
-                Future.delayed(100.ms, () {
-                  _scrollController.animateTo(
-                    0,
-                    duration: 500.ms,
-                    curve: Curves.easeInOut,
-                  );
-                });
-              },
-              child: const Icon(Icons.arrow_upward), // 可以选择其他图标
-            ),
-          ),),
-      ),
-      Visibility(
-        visible: _selectMode,
-        child: ExpandableFab(
-          distance: distance,
-          type: ExpandableFabType.fan,
-          overlayStyle: const ExpandableFabOverlayStyle(blur: 8),
-          openButtonBuilder: RotateFloatingActionButtonBuilder(
-            fabSize: fabSize,
-            child: Tooltip(
-              message: TranslationKey.moreActions.tr,
-              child: const Icon(Icons.menu),
-            ),
-          ),
-          closeButtonBuilder: DefaultFloatingActionButtonBuilder(
-            fabSize: fabSize,
-            child: Tooltip(
-              message: TranslationKey.close.tr,
-              child: const Icon(Icons.close),
-            ),
-          ),
-          children: [
-            _fabButtonFun(
-              onPressed: () {
-                _cancelSelectionMode();
-                appConfig.disableMultiSelectionMode(true);
-                setState(() {});
-              },
-              tooltip: TranslationKey.deselect.tr,
-              child: Icon(MdiIcons.cancel),
-            ),
-            _fabButtonFun(
-              onPressed: () async {
-                void multiDelete(bool deleteFile, [bool onlyDeleteLocal = false]) async {
-                  Get.back();
-                  Global.showLoadingDialog(
-                    context: context,
-                    loadingText: TranslationKey.deleting.tr,
-                  );
-                  for (var item in _selectedItems) {
-                    await deleteItem(item, deleteFile: true, onlyDeleteLocal: onlyDeleteLocal);
-                  }
-                  Get.back();
-                  Global.showSnackBarSuc(
-                    context: context,
-                    text: TranslationKey.deleteCompleted.tr,
-                  );
-                  appConfig.disableMultiSelectionMode(true);
-                  _cancelSelectionMode();
-                }
-                DialogController? dialog;
-                final onlyDeleteLocal = false.obs;
-                dialog = await Global.showTipsDialog(
-                  context: context,
-                  text: TranslationKey.clipListViewDeleteAsk.trParams({"length": _selectedItems.length.toString()}),
-                  showCancel: true,
-                  autoDismiss: false,
-                  customWidget: Container(
-                    margin: 10.insetT,
-                    child: Obx(() {
-                      return CheckboxListTile(
-                          title: Text(TranslationKey.onlyLocal.tr),
-                          value: onlyDeleteLocal.value,
-                          onChanged: (selected) {
-                            onlyDeleteLocal.value = selected ?? false;
-                          });
-                    }),
-                  ),
-                  showNeutral: _selectedItems.any((item) => item.isFile),
-                  neutralText: TranslationKey.deleteWithFiles.tr,
-                  onCancel: () {
-                    dialog!.close();
-                  },
-                  onNeutral: () => multiDelete(true, onlyDeleteLocal.value),
-                  onOk: () => multiDelete(false, onlyDeleteLocal.value),
-                );
-              },
-              tooltip: TranslationKey.delete.tr,
-              child: const Icon(Icons.delete_forever),
-            ),
-            _fabButtonFun(
-              onPressed: multiSelected ? () async {
-                var list = _selectedItems.toList()..sort((a, b) => a.data.id.compareTo(b.data.id));
-                var content = list.map((item) => item.data.content).join('\n');
-                await clipboardManager.copy(ClipboardContentType.text, content);
-                Global.showSnackBarSuc(text: TranslationKey.copySuccess.tr, context: context);
-                _cancelSelectionMode();
-              } : null,
-              tooltip: TranslationKey.copyMergedContent.tr,
-              child: const Icon(Icons.content_copy_rounded),
-            ),
-            _fabButtonFun(
-              onPressed: multiSelected ? () {
-                final historyController = Get.find<HistoryController>();
-                var loaded = false;
-                historyController.export((_) {
-                  if (loaded) {
-                    return [];
-                  }
-                  loaded = true;
-                  return _selectedItems.where((item) => !item.isFile)
-                      .map((item) => item.data)
-                      .toList();
-                }).whenComplete(() => _cancelSelectionMode());
-              } : null,
-              tooltip: TranslationKey.output.tr,
-              child: Icon(MdiIcons.export),
-            ),
-          ],
-        ),
-      ),
-    ];
     return Scaffold(
-      body: RefreshIndicator(
-        onRefresh: () async {
-          return Future.delayed(
-            500.ms,
-            widget.onRefreshData,
-          );
-        },
-        child: Obx(() => ConditionWidget(
-                visible: widget.list.isEmpty,
-                replacement: LayoutBuilder(
-                  builder: (ctx, constraints) {
-                    return Obx(() {
-                      final isImageMode = widget.imageMasonryGridViewLayout;
-                      final maxWidth = isImageMode ? 200.0 : 395;
-                      final showMore = (appConfig.showMoreItemsInRow && !appConfig.isSmallScreen) || isImageMode;
-                      final count = showMore ? max(2, constraints.maxWidth ~/ maxWidth) : 1;
-                      return Listener(
-                        child: MasonryGridView.count(
-                          crossAxisCount: count,
-                          mainAxisSpacing: 4,
-                          shrinkWrap: true,
-                          itemCount: widget.list.length,
-                          controller: _scrollController,
-                          physics: _scrollPhysics,
-                          itemBuilder: (context, index) {
-                            if (isImageMode) {
-                              return renderItem(index);
-                            } else {
-                              return Container(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 2,
-                                ),
-                                constraints: const BoxConstraints(
-                                  maxHeight: 150,
-                                  minHeight: 80,
-                                ),
-                                child: renderItem(index),
-                              );
-                            }
-                          },
-                        ),
-                        onPointerSignal: (e) {
-                          if (e is PointerScrollEvent) {
-                            // 已经滚动到底部，仍然尝试滚动
-                            if (_scrollController.position.pixels == _scrollController.position.maxScrollExtent) {
-                              Log.debug(tag, "Try loading more data at the bottom");
-                              _loadMoreData();
-                            }
-                          }
-                        },
-                      );
-                    });
-                  },
-                ),
-                child: Stack(
-                  children: [
-                    ListView(),
-                    EmptyContent(),
-                  ],
-                ),
-              ),
-      ),),
+      body: CustomKeyboardListener(
+        shortcuts: [
+          KeyboardShortcut(
+            physicalKeys: {PhysicalKeyboardKey.escape},
+            onTrigger: _exitSelectionMode,
+          ),
+          KeyboardShortcut(
+            physicalKeys: {PhysicalKeyboardKey.delete},
+            onTrigger: () {
+              _showSelectedDeleteDialog();
+            },
+          ),
+        ],
+        child: _buildBody(),
+      ),
       floatingActionButtonLocation: ExpandableFab.location,
-      floatingActionButton: SizedBox.expand(child: Stack(children: fab),),
+      floatingActionButton: _buildFloatingActionButton(),
     );
   }
 
-  ///取消选择模式
   void _cancelSelectionMode() {
-    _selectedItems.clear();
-    _selectMode = false;
+    _selectionController.clearAndExit();
     setState(() {});
   }
 

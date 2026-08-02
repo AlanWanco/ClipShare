@@ -6,9 +6,11 @@ import 'dart:math';
 import 'package:clipshare/app/data/enums/forward_msg_type.dart';
 import 'package:clipshare/app/data/enums/history_content_type.dart';
 import 'package:clipshare/app/data/enums/msg_type.dart';
+import 'package:clipshare/app/data/enums/notification_payload_type.dart';
 import 'package:clipshare/app/data/enums/syncing_file_state.dart';
 import 'package:clipshare/app/data/enums/translation_key.dart';
 import 'package:clipshare/app/data/models/dev_info.dart';
+import 'package:clipshare/app/data/models/notification_payload.dart';
 import 'package:clipshare/app/data/models/pending_file.dart';
 import 'package:clipshare/app/data/models/syncing_file.dart';
 import 'package:clipshare/app/data/repository/entity/tables/device.dart';
@@ -25,8 +27,10 @@ import 'package:clipshare/app/services/transport/storage_service.dart';
 import 'package:clipshare/app/utils/extensions/device_extension.dart';
 import 'package:clipshare/app/utils/extensions/file_extension.dart';
 import 'package:clipshare/app/utils/extensions/number_extension.dart';
+import 'package:clipshare/app/utils/extensions/platform_extension.dart';
 import 'package:clipshare/app/utils/extensions/time_extension.dart';
 import 'package:clipshare/app/utils/global.dart';
+import 'package:clipshare/app/utils/notify_util.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
@@ -37,6 +41,7 @@ import '../../utils/log.dart';
 
 class FileSyncHandler {
   static const tag = "FileSyncer";
+  static const _receivedFileNotifyKeyPrefix = 'receive-file';
   final appConfig = Get.find<ConfigService>();
   final dbService = Get.find<DbService>();
   final sktService = Get.find<SocketService>();
@@ -129,7 +134,7 @@ class FileSyncHandler {
             //向客户端发送文件
             sendFile2Socket(client);
           } catch (err, stack) {
-            Log.error(tag, "$err,$stack");
+            logger.error(tag, "$err,$stack");
             hasClient = false;
             client.close();
             _server?.close();
@@ -148,7 +153,7 @@ class FileSyncHandler {
       //向 中转服务器 发送文件
       sendFile2Socket(_forwardSkt!);
     } catch (err, stack) {
-      Log.error(tag, "$err,$stack");
+      logger.error(tag, "$err,$stack");
     }
   }
 
@@ -206,7 +211,7 @@ class FileSyncHandler {
           var path = filePath;
           try {
             path = Uri.decodeComponent(filePath);
-          } catch (err, stack) {
+          } catch (err) {
             //ignored
           }
           var history = History(
@@ -220,15 +225,15 @@ class FileSyncHandler {
             sync: true,
           );
           final historyController = Get.find<HistoryController>();
-          historyController.addData(history, false);
+          historyController.addData(history, null, false);
           syncingFile.setState(SyncingFileState.done);
         })
         .catchError((err, stack) {
           syncingFile.setState(SyncingFileState.error);
-          Log.error(tag, "send file failed: $filePath. $err $stack");
+          logger.error(tag, "send file failed: $filePath. $err $stack");
         })
         .whenComplete(() {
-          Log.info(tag, "send file($fileName) completed");
+          logger.info(tag, "send file($fileName) completed");
           client.close();
           _server?.close();
           _onDone();
@@ -239,11 +244,33 @@ class FileSyncHandler {
   void _delayedClientCheck(void Function() onDone) {
     Future.delayed(5.s, () {
       if (hasClient) return;
-      Log.info(tag, "No client connection for more than 5 seconds");
+      logger.info(tag, "No client connection for more than 5 seconds");
       _server?.close();
       _forwardSkt?.close();
       onDone();
     });
+  }
+
+  /// 桌面端按配置在接收完成后发送通知，点击后直接打开接收的文件。
+  static Future<void> _notifyReceivedFileIfNeeded({
+    required ConfigService appConfig,
+    required File file,
+    required int fileId,
+  }) async {
+    if (!PlatformExt.isDesktop || !appConfig.notifyOnReceivedFile) {
+      return;
+    }
+    await NotifyUtil.notify(
+      title: file.fileName,
+      content: TranslationKey.preferenceSettingsNotifyOnReceivedFileDesc.tr,
+      key: '$_receivedFileNotifyKeyPrefix-$fileId',
+      payload: NotificationPayload(
+        type: NotificationPayloadType.openFile,
+        data: {
+          NotificationPayload.filePathKey: file.normalizePath,
+        },
+      ),
+    );
   }
 
   //region 静态方法接收和发送文件
@@ -333,13 +360,15 @@ class FileSyncHandler {
     if (device.isUseStorage) {
       final storageService = Get.find<StorageService>();
       final appConfig = Get.find<ConfigService>();
-      storageService.sendData(DevInfo.fromDevice(device), MsgType.file, {
+      // 存储中转也必须等待发送结束后再推进队列，否则多文件发送会卡在当前设备。
+      await storageService.sendData(DevInfo.fromDevice(device), MsgType.file, {
         "fileId": appConfig.snowflake.nextId(),
         "filePath": pendingFile.filePath,
         "fileName": fileName,
         "isUri": pendingFile.isUri,
         "size": totalSize,
       });
+      onDone();
     } else {
       final sktService = Get.find<SocketService>();
       final useForward = sktService.isUseForward(device.guid);
@@ -379,13 +408,13 @@ class FileSyncHandler {
     final appConfig = Get.find<ConfigService>();
     Device? dev = await dbService.deviceDao.getById(devId, appConfig.userId);
     if (dev == null) {
-      Log.error(tag, "dev:$devId not found");
+      logger.error(tag, "dev:$devId not found");
       return;
     }
     var socket = await Socket.connect(ip, port);
     String filePath = "${appConfig.fileStorePath}/$fileName";
     File file = File(filePath);
-    Log.debug(tag, "receive file $filePath");
+    logger.debug(tag, "receive file $filePath");
     final dir = file.parent;
     //如果父级文件夹不存在则创建
     if (!await dir.exists()) {
@@ -448,16 +477,18 @@ class FileSyncHandler {
         syncingFile.addBytes(bytes);
       },
       onError: (err, stack) {
-        Log.error(tag, "receive file failed. $err $stack");
+        logger.error(tag, "receive file failed. $err $stack");
         file.delete();
         syncingFile.close(false);
       },
       cancelOnError: true,
-      onDone: () {
+      onDone: () async {
+        // 对端发送完成后会主动关闭写端，本端必须立即释放 Socket，避免连接停留在 CLOSE_WAIT。
+        socket.destroy();
         var end = DateTime.now();
         int offset = max(end.difference(start).inSeconds, 1);
         int speed = size ~/ offset;
-        Log.info(
+        logger.info(
           tag,
           "onDone $offset seconds, size: ${size.sizeStr}, speed: ${speed.sizeStr}/s",
         );
@@ -472,7 +503,16 @@ class FileSyncHandler {
           sync: true,
         );
         final historyController = Get.find<HistoryController>();
-        historyController.addData(history, false).whenComplete(() => syncingFile.close(true));
+        try {
+          await historyController.addData(history, null, false);
+        } finally {
+          syncingFile.close(true);
+        }
+        await _notifyReceivedFileIfNeeded(
+          appConfig: appConfig,
+          file: file,
+          fileId: fileId,
+        );
         if (file.isMediaFile) {
           //媒体文件，刷新媒体库
           if (Platform.isAndroid) {

@@ -78,7 +78,6 @@ class SyncFileStatus extends StatelessWidget {
       child: Card(
         elevation: 0,
         margin: EdgeInsets.zero,
-        color: Colors.transparent,
         child: InkWell(
           borderRadius: BorderRadius.circular(12.0),
           mouseCursor: SystemMouseCursors.basic,
@@ -160,7 +159,7 @@ class SyncFileStatus extends StatelessWidget {
                                     onPressed: () async {
                                       final path = File(syncingFile.filePath).parent.normalizePath;
                                       var result = await OpenFile.open(path);
-                                      Log.debug(
+                                      logger.debug(
                                         tag,
                                         "type: ${result.type}, msg: ${result.message}",
                                       );

@@ -2,21 +2,28 @@ import 'dart:convert';
 import 'dart:ui';
 
 import 'package:clipshare/app/data/enums/channelMethods/multi_window_method.dart';
+import 'package:clipshare/app/data/enums/multi_window_config.dart';
 import 'package:clipshare/app/data/enums/multi_window_tag.dart';
 import 'package:clipshare/app/data/enums/window_type.dart';
 import 'package:clipshare/app/data/models/search_filter.dart';
 import 'package:clipshare/app/data/repository/entity/tables/app_info.dart';
 import 'package:clipshare/app/data/repository/entity/tables/device.dart';
+import 'package:clipshare/app/services/config_service.dart';
 import 'package:clipshare/app/utils/extensions/platform_extension.dart';
 import 'package:desktop_multi_window/desktop_multi_window.dart';
 import 'package:get/get.dart';
+import 'package:window_manager/window_manager.dart';
 
 class MultiWindowChannelService extends GetxService {
   static const tag = "MultiWindowChannelService";
   final _hideWindowIds = <int>{};
 
   ///显示弹窗（从隐藏状态恢复）
-  Future showWindowFromHide(int targetWindowId, {List<double>? position, Map<String, dynamic>? args}) {
+  Future showWindowFromHide(
+    int targetWindowId, {
+    List<double>? position,
+    Map<String, dynamic>? args,
+  }) {
     if (!PlatformExt.isDesktop) return Future.value();
     Map<String, dynamic> data = {
       "position": position,
@@ -33,8 +40,13 @@ class MultiWindowChannelService extends GetxService {
   }
 
   ///关闭（隐藏）弹窗
-  Future closeWindow(int targetWindowId, int closeWindowId, MultiWindowTag tag) {
+  Future closeWindow(
+    int targetWindowId,
+    int closeWindowId,
+    MultiWindowTag tag,
+  ) {
     if (!PlatformExt.isDesktop) return Future.value();
+    windowManager.hide();
     _hideWindowIds.add(closeWindowId);
     return DesktopMultiWindow.invokeMethod(
       targetWindowId,
@@ -109,6 +121,17 @@ class MultiWindowChannelService extends GetxService {
     );
   }
 
+
+  ///通知主窗体复制
+  Future copyContent(int targetWindowId, String content) {
+    if (!PlatformExt.isDesktop) return Future(() => false);
+    return DesktopMultiWindow.invokeMethod(
+      targetWindowId,
+      MultiWindowMethod.copyContent.name,
+      jsonEncode({"content": content}),
+    );
+  }
+
   ///通知子窗体数据变更
   Future notify(int targetWindowId) {
     if (!PlatformExt.isDesktop) return Future(() => false);
@@ -168,7 +191,11 @@ class MultiWindowChannelService extends GetxService {
   }
 
   ///更新窗体尺寸
-  Future<void> updateWindowSize(int targetWindowId, WindowType windowType, Size size) {
+  Future<void> updateWindowSize(
+    int targetWindowId,
+    WindowType windowType,
+    Size size,
+  ) {
     return DesktopMultiWindow.invokeMethod(
       targetWindowId,
       MultiWindowMethod.updateWindowSize.name,
@@ -198,5 +225,32 @@ class MultiWindowChannelService extends GetxService {
       MultiWindowMethod.deleteHistory.name,
       jsonEncode({"id": id}),
     );
+  }
+
+  ///更新弹窗配置
+  Future<void> updateConfig(
+    MultiWindowConfig config,
+    dynamic value,
+  ) {
+    final appConfig = Get.find<ConfigService>();
+    var ids = <int>[];
+    final historyWindow = appConfig.historyWindow;
+    final onlineDevicesWindow = appConfig.onlineDevicesWindow;
+    if (historyWindow != null) {
+      ids.add(historyWindow.windowId);
+    }
+    if (onlineDevicesWindow != null) {
+      ids.add(onlineDevicesWindow.windowId);
+    }
+    final futures = <Future>[];
+    for (var id in ids) {
+      final future = DesktopMultiWindow.invokeMethod(
+        id,
+        MultiWindowMethod.updateConfig.name,
+        jsonEncode({config.name: value}),
+      );
+      futures.add(future);
+    }
+    return Future.wait(futures);
   }
 }

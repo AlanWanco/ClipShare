@@ -15,7 +15,9 @@ import 'package:clipshare/app/services/channels/android_channel.dart';
 import 'package:clipshare/app/services/config_service.dart';
 import 'package:clipshare/app/utils/constants.dart';
 import 'package:clipshare/app/utils/file_util.dart';
+import 'package:clipshare/app/utils/global.dart';
 import 'package:clipshare/app/utils/log.dart';
+import 'package:clipshare/app/utils/notify_util.dart';
 import 'package:flutter_screenshot_detect/flutter_screenshot_detect.dart';
 import 'package:get/get.dart';
 import 'package:uri_file_reader/uri_file_reader.dart';
@@ -28,6 +30,12 @@ class ClipboardService extends GetxService with ClipboardListener {
   var _detector = FlutterScreenshotDetect();
   final _isExcludeFormat = true.obs;
   var _pausedScreenshot = false;
+  bool _recoveringShizukuBinderPermission = false;
+  bool _requestingShizukuFromBinder = false;
+  bool _showingShizukuRequestFailedDialog = false;
+  DateTime? _lastShizukuDisconnectedNotifyAt;
+  static const _shizukuDisconnectedNotifyKey = "shizukuDisconnected";
+  static const _shizukuDisconnectedNotifyMinInterval = Duration(seconds: 10);
 
   bool get isExcludeFormat => _isExcludeFormat.value;
 
@@ -77,7 +85,7 @@ class ClipboardService extends GetxService with ClipboardListener {
       try {
         await _detectScreenShotFile(event);
       } catch (err, stack) {
-        Log.error(tag, err, stack);
+        logger.error(tag, err, stack);
       }
     });
   }
@@ -86,12 +94,12 @@ class ClipboardService extends GetxService with ClipboardListener {
     final androidChannelService = Get.find<AndroidChannelService>();
     await Future.delayed(500.ms);
     final uriFileInfo = await uriFileReader.getFileInfoFromUri(event.path!);
-    Log.debug(tag, "content uri: ${event.path!}");
+    logger.debug(tag, "content uri: ${event.path!}");
     var realPath = uriFileInfo?.path;
-    Log.debug(tag, "realPath: $realPath");
+    logger.debug(tag, "realPath: $realPath");
     bool checkLatestImage = false;
     if (realPath == null) {
-      Log.debug(
+      logger.debug(
         tag,
         "real path is null, attempt to get latest image path",
       );
@@ -99,10 +107,10 @@ class ClipboardService extends GetxService with ClipboardListener {
         checkLatestImage = true;
         final latestImagePath = await androidChannelService.getLatestImagePath();
         if (latestImagePath == null) {
-          Log.warn(tag, "latest image path is null");
+          logger.warn(tag, "latest image path is null");
           return;
         }
-        Log.debug(tag, "latest image path is $latestImagePath");
+        logger.debug(tag, "latest image path is $latestImagePath");
         realPath = latestImagePath;
       } catch (e) {
         return;
@@ -112,13 +120,13 @@ class ClipboardService extends GetxService with ClipboardListener {
     final lastModified = screenshotFile.lastModifiedSync();
     final now = DateTime.now();
     final diffMs = now.difference(lastModified).inMilliseconds;
-    Log.debug(
+    logger.debug(
       tag,
       "file lastModifiedTime $lastModified. diff: $diffMs ms",
     );
     if (diffMs > 3000 && checkLatestImage) {
       //最新图片的修改时间与当前时间差距超过3s，忽略
-      Log.debug(tag, "$diffMs ms More than 3 seconds.");
+      logger.debug(tag, "$diffMs ms More than 3 seconds.");
       return;
     }
     bool isScreenShot = false;
@@ -135,15 +143,15 @@ class ClipboardService extends GetxService with ClipboardListener {
     var copySuccess = false;
     try {
       final newFilePath = await uriFileReader.copyFileFromUri(event.path!, appConfig.cachePath);
-      Log.debug(tag, "ScreenshotDetect: $realPath");
+      logger.debug(tag, "ScreenshotDetect: $realPath");
       if (newFilePath != null) {
         HistoryDataListener.inst.onChanged(HistoryContentType.image, newFilePath, null);
         copySuccess = true;
       } else {
-        Log.warn(tag, "Copy screenshot file failed!");
+        logger.warn(tag, "Copy screenshot file failed!");
       }
     } catch (err, stack) {
-      Log.error(tag, err, stack);
+      logger.error(tag, err, stack);
     }
     if (copySuccess) {
       return;
@@ -153,17 +161,17 @@ class ClipboardService extends GetxService with ClipboardListener {
     final result = await clipboardManager.executePrivilegedCommand("cp ${screenshotFile.absolute.path} $newPath && echo 0");
     if (result == "0") {
       HistoryDataListener.inst.onChanged(HistoryContentType.image, newPath, null);
-      Log.debug(tag, "attempt copy origin file via command success");
+      logger.debug(tag, "attempt copy origin file via command success");
     } else {
-      Log.debug(tag, "attempt copy origin file via command failed: $result");
+      logger.debug(tag, "attempt copy origin file via command failed: $result");
       //源文件复制失败，判断是否是pending文件
       if (screenshotFile.fileName.startsWith(".pending-")) {
         final newFileName = screenshotFile.fileName.split("-").sublist(2).join('-');
         final path = p.join(screenshotFile.parent.absolute.path, newFileName);
-        Log.debug(tag, "newPath = $path");
+        logger.debug(tag, "newPath = $path");
         var retryCnt = 0;
         while (retryCnt < 5) {
-          Log.debug(tag, "retry ${retryCnt + 1} times..");
+          logger.debug(tag, "retry ${retryCnt + 1} times..");
           final exists = await File(path).exists();
           //尝试直接判断保存的文件是否存在
           if (exists) {
@@ -172,11 +180,11 @@ class ClipboardService extends GetxService with ClipboardListener {
             //尝试提权复制
             final result = await clipboardManager.executePrivilegedCommand("cp $path $newPath && echo 0");
             if (result == "0") {
-              Log.debug(tag, "attempt copy file via command success");
+              logger.debug(tag, "attempt copy file via command success");
               HistoryDataListener.inst.onChanged(HistoryContentType.image, path, null);
               break;
             } else {
-              Log.debug(tag, "attempt copy file via command failed: $result");
+              logger.debug(tag, "attempt copy file via command failed: $result");
             }
           }
           await Future.delayed(2.s);
@@ -201,7 +209,7 @@ class ClipboardService extends GetxService with ClipboardListener {
   @override
   void onClipboardChanged(ClipboardContentType type, String content, ClipboardSource? source) {
     final contentType = HistoryContentType.parse(type.name);
-    Log.debug(tag, "onChange ${content.substring(0, min(content.length, 200))}");
+    logger.debug(tag, "onChange ${content.substring(0, min(content.length, 200))}");
     HistoryDataListener.inst.onChanged(contentType, content, source);
   }
 
@@ -210,15 +218,124 @@ class ClipboardService extends GetxService with ClipboardListener {
     if (appConfig.selectingWorkingMode.value) {
       return;
     }
-    final settingsController = Get.find<SettingsController>();
+    if (environment == EnvironmentType.shizuku && !isGranted) {
+      final shouldShowRequestFailedDialog = _requestingShizukuFromBinder;
+      _requestingShizukuFromBinder = false;
+      _recoveringShizukuBinderPermission = false;
+      // Shizuku 权限请求失败时只做轻量标记，避免立刻访问可能刚断开的远端状态。
+      settingsController.markShizukuUnavailable();
+      if (shouldShowRequestFailedDialog) {
+        _showShizukuRequestFailedDialog();
+      }
+      return;
+    }
     if (isGranted && environment != EnvironmentType.none && environment != EnvironmentType.androidPre10) {
-      await clipboardManager.startListening(
-        env: environment,
-        way: appConfig.clipboardListeningWay,
-        notificationContentConfig: ClipboardService.defaultNotificationContentConfig,
-      );
+      await _startListeningWithEnvironment(environment);
+    }
+    if (environment == EnvironmentType.shizuku) {
+      if (isGranted) {
+        _requestingShizukuFromBinder = false;
+      }
     }
     settingsController.checkAndroidEnvPermission();
+  }
+
+  @override
+  Future<void> onShizukuBinderStatusChanged(bool available) async {
+    if (!Platform.isAndroid) return;
+    if (!available) {
+      _requestingShizukuFromBinder = false;
+      _recoveringShizukuBinderPermission = false;
+      // Shizuku 服务断开时只标记界面状态，不主动查询或请求权限，避免触发失效 binder。
+      settingsController.markShizukuUnavailable();
+      return;
+    }
+    await _recoverShizukuAfterBinderAvailable();
+  }
+
+  /// Shizuku binder 可用后恢复授权和监听状态。
+  ///
+  /// binder 可用只代表 Shizuku 服务可连接；这里仍需先检查应用是否已授权，
+  /// 未授权时才触发 Shizuku 权限请求。
+  Future<void> _recoverShizukuAfterBinderAvailable() async {
+    if (_recoveringShizukuBinderPermission || _requestingShizukuFromBinder) return;
+    if (appConfig.workingMode != EnvironmentType.shizuku || appConfig.ignoreShizuku || appConfig.selectingWorkingMode.value) {
+      return;
+    }
+    _recoveringShizukuBinderPermission = true;
+    try {
+      final hasPermission = await clipboardManager.checkPermission(EnvironmentType.shizuku);
+      if (hasPermission) {
+        await _startListeningWithEnvironment(EnvironmentType.shizuku);
+        settingsController.checkAndroidEnvPermission();
+        return;
+      }
+      _requestingShizukuFromBinder = true;
+      await clipboardManager.requestPermission(EnvironmentType.shizuku);
+    } catch (err, stack) {
+      logger.error(tag, err, stack);
+      _requestingShizukuFromBinder = false;
+      _showShizukuRequestFailedDialog();
+      // 自动恢复期间异常通常代表 Shizuku 状态刚变化，避免立刻再次访问插件 API。
+      settingsController.markShizukuUnavailable();
+    } finally {
+      _recoveringShizukuBinderPermission = false;
+    }
+  }
+
+  /// 使用指定工作环境启动剪贴板监听。
+  ///
+  /// Shizuku binder 重连和权限请求成功都会复用这里，确保通知文案和监听方式一致。
+  Future<void> _startListeningWithEnvironment(EnvironmentType environment) {
+    return clipboardManager.startListening(
+      env: environment,
+      way: appConfig.clipboardListeningWay,
+      notificationContentConfig: ClipboardService.defaultNotificationContentConfig,
+    );
+  }
+
+  /// 弹出 Shizuku 断开通知。
+  ///
+  /// binder dead 可能发生在后台，必须通过系统通知明确告知用户；短时间内多次回调只保留最近一次。
+  Future<void> _notifyShizukuDisconnected() async {
+    final now = DateTime.now();
+    final lastNotifyAt = _lastShizukuDisconnectedNotifyAt;
+    if (lastNotifyAt != null && now.difference(lastNotifyAt) < _shizukuDisconnectedNotifyMinInterval) {
+      return;
+    }
+    _lastShizukuDisconnectedNotifyAt = now;
+    try {
+      final notifyId = await NotifyUtil.notify(
+        title: TranslationKey.defaultClipboardServerNotificationCfgShizukuDisconnectedTitle.tr,
+        content: TranslationKey.defaultClipboardServerNotificationCfgShizukuDisconnectedText.tr,
+        key: _shizukuDisconnectedNotifyKey,
+      );
+      if (notifyId != null) {
+        NotifyUtil.cancelExcludeLast(_shizukuDisconnectedNotifyKey);
+      }
+    } catch (err, stack) {
+      logger.error(tag, err, stack);
+    }
+  }
+
+  /// 展示 Shizuku 自动授权失败提示。
+  ///
+  /// 仅自动恢复流程使用该提示，避免和工作模式选择页自己的失败提示重复。
+  Future<void> _showShizukuRequestFailedDialog() async {
+    if (_showingShizukuRequestFailedDialog || Get.context == null) return;
+    _showingShizukuRequestFailedDialog = true;
+    DialogController? dialog;
+    dialog = await Global.showTipsDialog(
+      context: Get.context!,
+      title: TranslationKey.requestFailed.tr,
+      text: TranslationKey.shizukuRequestFailedDialogText.tr,
+      showCancel: false,
+      autoDismiss: false,
+      onOk: () {
+        _showingShizukuRequestFailedDialog = false;
+        dialog?.close();
+      },
+    );
   }
 
   @override

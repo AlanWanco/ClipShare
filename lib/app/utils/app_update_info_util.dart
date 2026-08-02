@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:ffi';
 import 'dart:io';
 
+import 'package:clipshare/app/data/enums/app_language.dart';
 import 'package:clipshare/app/data/enums/translation_key.dart';
 import 'package:clipshare/app/data/models/update_log.dart';
 import 'package:clipshare/app/exceptions/fetch_update_logs_exception.dart';
@@ -10,7 +11,6 @@ import 'package:clipshare/app/utils/constants.dart';
 import 'package:clipshare/app/utils/extensions/file_extension.dart';
 import 'package:clipshare/app/utils/extensions/number_extension.dart';
 import 'package:clipshare/app/utils/extensions/string_extension.dart';
-import 'package:clipshare/app/utils/extensions/list_extension.dart';
 import 'package:clipshare/app/utils/global.dart';
 import 'package:clipshare/app/utils/log.dart';
 import 'package:clipshare/app/utils/notify_util.dart';
@@ -35,26 +35,45 @@ class AppUpdateInfoUtil {
   static const String _archArm64 = "arm64";
   static const String _archX86 = "ia32";
   static const String _archX64 = "x64";
+  static const String _defaultUpdateInfoFileName = "version-info.json";
   static final String _currentArch = Abi.current().toString().split("_").last;
+
+  /// 根据当前真实语言构造更新信息地址；中文沿用默认文件，非中文统一使用英文更新说明文件。
+  static String _buildUpdateInfoUrl(ConfigService appConfig) {
+    final locale = appConfig.language.resolveLocale(Get.deviceLocale);
+    if (locale.languageCode.toLowerCase() == AppLanguage.zhCnLocale.languageCode) {
+      return Constants.appUpdateInfoUrl;
+    }
+    return Constants.appUpdateInfoUrl.replaceFirst(_defaultUpdateInfoFileName, "version-info.en.json");
+  }
 
   static Future<List<UpdateLog>> fetchUpdateLogs() async {
     try {
-      final resp = await http.get(Uri.parse(Constants.appUpdateInfoUrl));
+      final appConfig = Get.find<ConfigService>();
+      final resp = await http.get(Uri.parse(_buildUpdateInfoUrl(appConfig)));
       if (resp.statusCode != 200) {
         throw FetchUpdateLogsException(resp.statusCode.toString());
       }
       final updateLogs = List<UpdateLog>.empty(growable: true);
       final body = jsonDecode(utf8.decode(resp.bodyBytes));
       final logs = body["logs"] as List<dynamic>;
-      final system = Platform.isMacOS ? "MacOS" : Platform.operatingSystem;
-      final appConfig = Get.find<ConfigService>();
+      final String system;
+      if (Platform.isMacOS) {
+        system = "MacOS";
+      } else if (Platform.isIOS) {
+        system = "IOS";
+      } else {
+        //iOS = ios
+        //macOS = macos
+        system = Platform.operatingSystem;
+      }
       final currentVersion = appConfig.version;
 
       for (var log in logs) {
         log['url'] = body["downloads"][system.upperFirst]["url"];
         final ul = UpdateLog.fromJson(log);
         final platform = ul.platform.toLowerCase();
-        if ((platform != system && platform != 'all') || ul.version <= currentVersion) {
+        if ((platform != system.toLowerCase() && platform != 'all') || ul.version <= currentVersion) {
           continue;
         }
         updateLogs.add(ul);
@@ -63,7 +82,7 @@ class AppUpdateInfoUtil {
       return updateLogs;
     } catch (e) {
       final errorMsg = "检查update log的过程中出现异常\n错误: $e";
-      Log.error(tag, errorMsg);
+      logger.error(tag, errorMsg);
       throw FetchUpdateLogsException(errorMsg);
     }
   }
@@ -111,7 +130,7 @@ class AppUpdateInfoUtil {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Container(
-            margin: 8.insetB,
+            margin: 4.insetV,
             child: Text(
               TranslationKey.selectInstallerType.tr,
               style: theme.textTheme.labelMedium?.copyWith(
@@ -233,7 +252,7 @@ class AppUpdateInfoUtil {
             },
           );
         } catch (err, stack) {
-          Log.error(tag, "error: $err. $stack");
+          logger.error(tag, "error: $err. $stack");
           downloadUrl.askOpenUrl();
         }
       },
@@ -272,14 +291,14 @@ class AppUpdateInfoUtil {
   }
 
   static Future<void> _updateWindowsFromZip(File updateFile) async {
-    Log.debug(tag, "update zip file downloaded");
+    logger.debug(tag, "update zip file downloaded");
     final downDirPath = updateFile.parent.absolute.path;
     final updateFileExtractDirPath = p.join(downDirPath, "temp").normalizePath;
     await Directory(updateFileExtractDirPath).create(recursive: true);
-    Log.debug(tag, "zip file extracting");
+    logger.debug(tag, "zip file extracting");
     //解压zip
     await ZipFile.openAndExtractAsync(updateFile.absolute.path, updateFileExtractDirPath);
-    Log.debug(tag, "zip file extracted");
+    logger.debug(tag, "zip file extracted");
     final execDirPath = File(Platform.resolvedExecutable).parent.absolute.path;
     final batFilePath = p.join(execDirPath, "data", "flutter_assets", "assets", "scripts", "update_windows.bat").normalizePath;
     final process = await Process.start(
@@ -289,9 +308,9 @@ class AppUpdateInfoUtil {
       mode: ProcessStartMode.detached,
       workingDirectory: execDirPath,
     );
-    Log.debug(tag, 'Update process started (PID: ${process.pid})');
+    logger.debug(tag, 'Update process started (PID: ${process.pid})');
     await Future.delayed(1.s);
-    Log.debug(tag, 'Exiting application, waiting for batch update...');
+    logger.debug(tag, 'Exiting application, waiting for batch update...');
     exit(0);
   }
 }

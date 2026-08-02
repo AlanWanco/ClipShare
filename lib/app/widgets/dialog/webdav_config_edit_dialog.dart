@@ -1,10 +1,8 @@
-import 'dart:io';
-
 import 'package:clipshare/app/data/models/storage/web_dav_config.dart';
-import 'package:clipshare/app/handlers/storage/web_dav_client.dart';
 import 'package:clipshare/app/routes/app_pages.dart';
 import 'package:clipshare/app/utils/constants.dart';
 import 'package:clipshare/app/utils/extensions/platform_extension.dart';
+import 'package:clipshare/app/utils/extensions/storage_config_extension.dart';
 import 'package:clipshare/app/utils/extensions/string_extension.dart';
 import 'package:clipshare/app/utils/global.dart';
 import 'package:clipshare/app/utils/log.dart';
@@ -14,6 +12,7 @@ import 'package:clipshare/app/widgets/loading.dart';
 import 'package:flutter/material.dart';
 import 'package:clipshare/app/data/enums/translation_key.dart';
 import 'package:get/get.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 class WebDAVConfigEditDialog extends StatefulWidget {
   final void Function(WebDAVConfig config) onOk;
@@ -36,6 +35,7 @@ class _WebDAVConfigEditDialogState extends State<WebDAVConfigEditDialog> {
   final usernameEditor = TextEditingController();
   final passwordEditor = TextEditingController();
   final baseDirEditor = TextEditingController(text: '/');
+  final uaEditor = TextEditingController();
 
   bool _obscurePassword = true;
   String? nameErrText;
@@ -51,6 +51,7 @@ class _WebDAVConfigEditDialogState extends State<WebDAVConfigEditDialog> {
     username: usernameEditor.text,
     password: passwordEditor.text,
     baseDir: baseDirEditor.text,
+    userAgent: uaEditor.text.isNotEmpty ? uaEditor.text : null,
   );
 
   @override
@@ -67,6 +68,7 @@ class _WebDAVConfigEditDialogState extends State<WebDAVConfigEditDialog> {
     usernameEditor.text = config.username;
     passwordEditor.text = config.password;
     baseDirEditor.text = config.baseDir;
+    uaEditor.text = config.userAgent ?? '';
   }
 
   bool validateNameEditor() {
@@ -129,10 +131,7 @@ class _WebDAVConfigEditDialogState extends State<WebDAVConfigEditDialog> {
 
   bool validateBaseDirEditor() {
     bool isValid;
-    if (baseDirEditor.text == "/") {
-      isValid = false;
-      baseDirErrText = TranslationKey.notAllowRootPath.tr;
-    } else if (baseDirEditor.text.isEmpty) {
+    if (baseDirEditor.text.isEmpty) {
       baseDirErrText = TranslationKey.baseDirectoryRequired.tr;
       isValid = false;
     } else if (!baseDirEditor.text.startsWith('/')) {
@@ -161,7 +160,7 @@ class _WebDAVConfigEditDialogState extends State<WebDAVConfigEditDialog> {
       setState(() {
         testingConnection = true;
       });
-      final exception = await WebDAVClient(config).testConnect();
+      final exception = await config.toClient().testConnect();
       if (!testingConnection) {
         return;
       }
@@ -196,14 +195,15 @@ class _WebDAVConfigEditDialogState extends State<WebDAVConfigEditDialog> {
                   onPressed: testingConnection
                       ? null
                       : () async {
-                          var hasPerm = await PermissionHelper.testAndroidCameraPerm();
+                          var hasPerm = await PermissionHelper.testCameraPerm();
                           if (!hasPerm) {
-                            await PermissionHelper.reqAndroidCameraPerm();
-                            hasPerm = await PermissionHelper.testAndroidCameraPerm();
+                            await PermissionHelper.reqCameraPerm();
+                            hasPerm = await PermissionHelper.testCameraPerm();
                             if (!hasPerm) {
                               Global.showTipsDialog(
                                 context: context,
                                 text: TranslationKey.noCameraPermission.tr,
+                                onOk: () => openAppSettings(),
                               );
                               return;
                             }
@@ -217,11 +217,11 @@ class _WebDAVConfigEditDialogState extends State<WebDAVConfigEditDialog> {
                               });
                             } else {
                               Global.showTipsDialog(context: context, text: TranslationKey.qrCodeScanError.tr);
-                              Log.warn(tag, "scan result is null");
+                              logger.warn(tag, "scan result is null");
                             }
                           } catch (err, stack) {
                             Global.showTipsDialog(context: context, text: TranslationKey.qrCodeScanError.tr);
-                            Log.error(tag, err, stack);
+                            logger.error(tag, err, stack);
                           }
                         },
                   icon: const Icon(
@@ -304,6 +304,19 @@ class _WebDAVConfigEditDialogState extends State<WebDAVConfigEditDialog> {
                   },
                 ),
                 const SizedBox(height: 16),
+
+                //user-agent
+                TextField(
+                  controller: uaEditor,
+                  enabled: !testingConnection,
+                  decoration: InputDecoration(
+                    labelText: 'User-Agent (${TranslationKey.optional.tr})',
+                    hintStyle: TextStyle(color: Colors.grey[400]),
+                    border: const OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 16),
+
                 Row(
                   children: [
                     Expanded(
@@ -340,12 +353,12 @@ class _WebDAVConfigEditDialogState extends State<WebDAVConfigEditDialog> {
                                         onLoadFiles: (String path) async {
                                           selectedPath = path.unixPath;
                                           final tempConfig = config.copyWith(baseDir: Constants.unixDirSeparate);
-                                          final list = await WebDAVClient(tempConfig).list(path: path);
+                                          final list = await tempConfig.toClient().list(path: path);
                                           return list.where((item) => item.isDir).map((item) => FileItem(name: item.name, isDirectory: true, fullPath: item.path)).toList();
                                         },
                                         onCreateDirectory: (current, name) {
                                           final tempConfig = config.copyWith(baseDir: Constants.unixDirSeparate);
-                                          final client = WebDAVClient(tempConfig);
+                                          final client = tempConfig.toClient();
                                           return client.createDirectory("$current/$name/");
                                         },
                                         shouldShowUpLevel: (path) => path != Constants.unixDirSeparate || path.isNullOrEmpty,
@@ -359,10 +372,6 @@ class _WebDAVConfigEditDialogState extends State<WebDAVConfigEditDialog> {
                                       ),
                                       TextButton(
                                         onPressed: () {
-                                          if (selectedPath == "/") {
-                                            Global.showTipsDialog(context: context, text: TranslationKey.notAllowRootPath.tr);
-                                            return;
-                                          }
                                           baseDirEditor.text = selectedPath;
                                           dialog?.close();
                                           validateFields();

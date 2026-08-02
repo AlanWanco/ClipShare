@@ -1,6 +1,5 @@
 package top.coclyun.clipshare
 
-import android.app.Activity
 import android.app.ActivityManager
 import android.app.Application
 import android.app.NotificationChannel
@@ -40,15 +39,23 @@ import top.coclyun.clipshare.broadcast.ScreenReceiver
 import top.coclyun.clipshare.clipboard_listener.ClipshareClipboardListenerPlugin
 import top.coclyun.clipshare.observer.SmsObserver
 import top.coclyun.clipshare.service.HistoryFloatService
+import top.coclyun.clipshare.service.KeepAliveFloatService
 import java.io.File
 import java.io.FileOutputStream
 import java.io.OutputStream
 import java.net.URLDecoder
 
 const val lockHistoryFloatLocation = "LOCK_HISTORY_FLOAT_LOCATION"
+const val setHistoryFloatHandleWidth = "SET_HISTORY_FLOAT_HANDLE_WIDTH"
+const val setHistoryFloatHandleColor = "SET_HISTORY_FLOAT_HANDLE_COLOR"
+const val setHistoryFloatHandleApplyAlphaToWholeHandle = "SET_HISTORY_FLOAT_HANDLE_APPLY_ALPHA_TO_WHOLE_HANDLE"
+// 历史悬浮窗主题同步广播，取值与 Flutter ThemeMode.name 保持一致。
+const val setHistoryFloatThemeMode = "SET_HISTORY_FLOAT_THEME_MODE"
 const val loadHistories = "LOAD_HISTORIES"
 const val sendHistories = "SEND_HISTORIES"
 const val OnHistoryChangedBroadcastAction = "top.coclyun.clipshare.ACTION_ON_HISTORY_CHANGED"
+// Match the original translucent white default until the user picks a custom handle color.
+val defaultHistoryFloatHandleColor = 0x17FFFFFF.toInt()
 
 class MyApplication : Application() {
 
@@ -85,10 +92,10 @@ class MyApplication : Application() {
         /**
          * 发送通知
          */
-        fun commonNotify(content: String): Int {
+        fun commonNotify(title:String?, content: String): Int {
             // 构建通知
             val builder = NotificationCompat.Builder(applicationContext, commonNotifyChannelId)
-                .setSmallIcon(R.drawable.launcher_icon).setContentTitle("ClipShare")
+                .setSmallIcon(R.drawable.launcher_icon).setContentTitle( title ?: "ClipShare")
                 .setContentText(content).setPriority(NotificationCompat.PRIORITY_HIGH)
                 .setContentIntent(pendingIntent).setFullScreenIntent(pendingIntent, true)
                 // 点击通知后自动关闭
@@ -107,19 +114,20 @@ class MyApplication : Application() {
         }
     }
 
+    /**
+     * 初始化应用主进程的 FlutterEngine 和平台通道，独立进程只保留自身必要初始化。
+     */
     override fun onCreate() {
         super.onCreate()
-        ClipshareClipboardListenerPlugin.activityClass = MainActivity::class.java
         MyApplication.applicationContext = applicationContext
+        if (!isMainProcess()) {
+            Log.d(TAG, "Skip FlutterEngine initialization in non-main process: ${getCurrentProcessName()}")
+            return
+        }
+        ClipshareClipboardListenerPlugin.activityClass = MainActivity::class.java
         MyApplication.pendingIntent = createPendingIntent()
         // 创建 engine
         flutterEngine = FlutterEngine(this)
-        // 缓存 engine
-        FlutterEngineCache.getInstance().put(FLUTTER_ENGINE_ID, flutterEngine)
-        flutterEngine.dartExecutor.executeDartEntrypoint(
-            DartExecutor.DartEntrypoint.createDefault()
-        )
-        GeneratedPluginRegistrant.registerWith(flutterEngine)
         this.binaryMessenger = flutterEngine.dartExecutor.binaryMessenger
         commonChannel = MethodChannel(binaryMessenger, "top.coclyun.clipshare/common")
         androidChannel = MethodChannel(binaryMessenger, "top.coclyun.clipshare/android")
@@ -128,6 +136,32 @@ class MyApplication : Application() {
         initAndroidChannel()
         createNotifyChannel()
         setupLocalBroadcastReceiver()
+        // 先完成插件、通知和平台通道注册，再启动 Dart，避免入口代码过早调用尚未准备好的 MethodChannel。
+        flutterEngine.dartExecutor.executeDartEntrypoint(
+            DartExecutor.DartEntrypoint.createDefault()
+        )
+        FlutterEngineCache.getInstance().put(FLUTTER_ENGINE_ID, flutterEngine)
+    }
+
+    /**
+     * 判断当前是否为应用主进程，只有主进程需要初始化并缓存 FlutterEngine。
+     */
+    private fun isMainProcess(): Boolean {
+        return packageName == getCurrentProcessName()
+    }
+
+    /**
+     * 获取当前进程名，用于避免 ACRA 等独立进程重复初始化 Flutter 引擎。
+     */
+    private fun getCurrentProcessName(): String? {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            return Application.getProcessName()
+        }
+        val currentPid = android.os.Process.myPid()
+        val activityManager = getSystemService(ACTIVITY_SERVICE) as ActivityManager
+        return activityManager.runningAppProcesses
+            ?.firstOrNull { processInfo -> processInfo.pid == currentPid }
+            ?.processName
     }
 
     override fun attachBaseContext(newBase: Context?) {
@@ -161,6 +195,9 @@ class MyApplication : Application() {
         contentResolver.registerContentObserver(Uri.parse("content://sms/"), true, observer)
     }
 
+    /**
+     * 注册应用内历史记录广播，将悬浮窗请求转发到 Flutter 侧并回传查询结果。
+     */
     private fun setupLocalBroadcastReceiver() {
         localBroadcastReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
@@ -180,20 +217,17 @@ class MyApplication : Application() {
                                             add(HashMap(map))
                                         }
                                     }
-                                    val intent = Intent(sendHistories)
-                                    intent.putExtra("list", serializableList)
-                                    intent.putExtra("more", more)
-                                    LocalBroadcastManager.getInstance(context).sendBroadcast(intent)
+                                    sendHistoriesResult(context, more, serializableList)
                                 }
 
                                 override fun error(
                                     errorCode: String, errorMessage: String?, errorDetails: Any?
                                 ) {
-                                    TODO("Not yet implemented")
+                                    Log.e(TAG, "Failed to get histories from Flutter: $errorCode, $errorMessage")
                                 }
 
                                 override fun notImplemented() {
-                                    TODO("Not yet implemented")
+                                    Log.e(TAG, "Flutter method getHistory is not implemented")
                                 }
 
                             })
@@ -209,6 +243,20 @@ class MyApplication : Application() {
         LocalBroadcastManager.getInstance(this).registerReceiver(
             localBroadcastReceiver, filter
         )
+    }
+
+    /**
+     * 将 Flutter 返回的历史记录查询结果转发给悬浮窗。
+     */
+    private fun sendHistoriesResult(
+        context: Context,
+        more: Boolean,
+        histories: List<HashMap<String, Any>>
+    ) {
+        val intent = Intent(sendHistories)
+        intent.putExtra("list", ArrayList(histories))
+        intent.putExtra("more", more)
+        LocalBroadcastManager.getInstance(context).sendBroadcast(intent)
     }
 
     private fun unRegisterSmsObserver() {
@@ -298,6 +346,7 @@ class MyApplication : Application() {
                         ACTION_MANAGE_OVERLAY_PERMISSION, "package:$packageName".toUri()
                     )
                     mainActivity?.startActivityForResult(intent, requestOverlayResultCode);
+                    result.success(true)
                 }
                 //检查通知权限
                 "checkNotification" -> {
@@ -321,8 +370,9 @@ class MyApplication : Application() {
                 }
                 //发送通知
                 "sendNotify" -> {
+                    val title = args["title"].toString();
                     val content = args["content"].toString();
-                    result.success(commonNotify(content));
+                    result.success(commonNotify(title, content));
                 }
                 //发送通知
                 "cancelNotify" -> {
@@ -332,9 +382,113 @@ class MyApplication : Application() {
                 }
                 //显示历史浮窗
                 "showHistoryFloatWindow" -> {
+                    val width = (args["width"] as? Number)?.toInt() ?: 32
+                    val color = (args["color"] as? Number)?.toInt() ?: defaultHistoryFloatHandleColor
+                    val applyAlphaToWholeHandle =
+                        args[HistoryFloatService.EXTRA_APPLY_ALPHA_TO_WHOLE_HANDLE] as? Boolean
+                            ?: false
+                    val themeMode = args[HistoryFloatService.EXTRA_FLOAT_THEME_MODE] as? String
+                    val i18n = args["i18n"] as? Map<*, *>
                     if (!isServiceRunning(this, HistoryFloatService::class.java)) {
-                        startService(Intent(this, HistoryFloatService::class.java))
+                        startService(Intent(this, HistoryFloatService::class.java).apply {
+                            putExtra("width", width)
+                            putExtra("color", color)
+                            putExtra(
+                                HistoryFloatService.EXTRA_APPLY_ALPHA_TO_WHOLE_HANDLE,
+                                applyAlphaToWholeHandle
+                            )
+                            putExtra(HistoryFloatService.EXTRA_FLOAT_THEME_MODE, themeMode)
+                            putExtra(
+                                HistoryFloatService.EXTRA_FLOAT_TITLE,
+                                i18n?.get("title") as? String
+                            )
+                            putExtra(
+                                HistoryFloatService.EXTRA_FLOAT_COUNT_TEMPLATE,
+                                i18n?.get("countTemplate") as? String
+                            )
+                            putExtra(
+                                HistoryFloatService.EXTRA_FLOAT_IMAGE_UNAVAILABLE,
+                                i18n?.get("imageUnavailable") as? String
+                            )
+                            putExtra(
+                                HistoryFloatService.EXTRA_FLOAT_TEXT_TYPE,
+                                i18n?.get("textType") as? String
+                            )
+                            putExtra(
+                                HistoryFloatService.EXTRA_FLOAT_IMAGE_TYPE,
+                                i18n?.get("imageType") as? String
+                            )
+                            putExtra(
+                                HistoryFloatService.EXTRA_FLOAT_FILE_TYPE,
+                                i18n?.get("fileType") as? String
+                            )
+                        })
                     }
+                }
+                // 同步运行中的历史悬浮窗主题，不影响悬浮窗开关状态。
+                "setHistoryFloatThemeMode" -> {
+                    val themeMode = args[HistoryFloatService.EXTRA_FLOAT_THEME_MODE] as? String
+                    val intent = Intent(setHistoryFloatThemeMode)
+                    intent.putExtra(HistoryFloatService.EXTRA_FLOAT_THEME_MODE, themeMode)
+                    LocalBroadcastManager.getInstance(this).sendBroadcast(intent)
+                    if (isServiceRunning(this, HistoryFloatService::class.java)) {
+                        startService(Intent(this, HistoryFloatService::class.java).apply {
+                            action = setHistoryFloatThemeMode
+                            putExtra(HistoryFloatService.EXTRA_FLOAT_THEME_MODE, themeMode)
+                        })
+                    }
+                }
+                "showKeepAliveFloatWindow" -> {
+                    if (Settings.canDrawOverlays(this) && !isServiceRunning(this, KeepAliveFloatService::class.java)) {
+                        startService(Intent(this, KeepAliveFloatService::class.java))
+                    }
+                }
+                "setHistoryFloatHandleWidth" -> {
+                    val width = (args["width"] as? Number)?.toInt() ?: 32
+                    val intent = Intent(setHistoryFloatHandleWidth)
+                    intent.putExtra("width", width)
+                    LocalBroadcastManager.getInstance(this).sendBroadcast(intent)
+                    if (isServiceRunning(this, HistoryFloatService::class.java)) {
+                        startService(Intent(this, HistoryFloatService::class.java).apply {
+                            action = setHistoryFloatHandleWidth
+                            putExtra("width", width)
+                        })
+                    }
+                }
+                "setHistoryFloatHandleColor" -> {
+                    val color = (args["color"] as? Number)?.toInt() ?: defaultHistoryFloatHandleColor
+                    val intent = Intent(setHistoryFloatHandleColor)
+                    intent.putExtra("color", color)
+                    LocalBroadcastManager.getInstance(this).sendBroadcast(intent)
+                    if (isServiceRunning(this, HistoryFloatService::class.java)) {
+                        startService(Intent(this, HistoryFloatService::class.java).apply {
+                            action = setHistoryFloatHandleColor
+                            putExtra("color", color)
+                        })
+                    }
+                }
+                "setHistoryFloatHandleApplyAlphaToWholeHandle" -> {
+                    val applyAlphaToWholeHandle =
+                        args[HistoryFloatService.EXTRA_APPLY_ALPHA_TO_WHOLE_HANDLE] as? Boolean
+                            ?: false
+                    val intent = Intent(setHistoryFloatHandleApplyAlphaToWholeHandle)
+                    intent.putExtra(
+                        HistoryFloatService.EXTRA_APPLY_ALPHA_TO_WHOLE_HANDLE,
+                        applyAlphaToWholeHandle
+                    )
+                    LocalBroadcastManager.getInstance(this).sendBroadcast(intent)
+                    if (isServiceRunning(this, HistoryFloatService::class.java)) {
+                        startService(Intent(this, HistoryFloatService::class.java).apply {
+                            action = setHistoryFloatHandleApplyAlphaToWholeHandle
+                            putExtra(
+                                HistoryFloatService.EXTRA_APPLY_ALPHA_TO_WHOLE_HANDLE,
+                                applyAlphaToWholeHandle
+                            )
+                        })
+                    }
+                }
+                "closeKeepAliveFloatWindow" -> {
+                    stopService(Intent(this, KeepAliveFloatService::class.java))
                 }
                 //锁定悬浮窗位置
                 "lockHistoryFloatLoc" -> {
@@ -342,6 +496,12 @@ class MyApplication : Application() {
                     val intent = Intent(lockHistoryFloatLocation)
                     intent.putExtra("lock", lockLoc)
                     LocalBroadcastManager.getInstance(this).sendBroadcast(intent)
+                    if (isServiceRunning(this, HistoryFloatService::class.java)) {
+                        startService(Intent(this, HistoryFloatService::class.java).apply {
+                            action = lockHistoryFloatLocation
+                            putExtra("lock", lockLoc)
+                        })
+                    }
                 }
                 //关闭历史浮窗
                 "closeHistoryFloatWindow" -> {
@@ -545,9 +705,11 @@ class MyApplication : Application() {
         )
     }
 
+    /**
+     * 创建通知点击 PendingIntent，当前按既有行为保留入口目标。
+     */
     private fun createPendingIntent(): PendingIntent {
-        val intent = Intent(this, this::class.java)
-        intent.putExtra("fromNotification", true)
+        val intent = Intent(this, ProxyActivity::class.java)
         return PendingIntent.getActivity(this, 0, intent, PendingIntent.FLAG_IMMUTABLE)
     }
 

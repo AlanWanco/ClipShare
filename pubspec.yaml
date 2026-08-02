@@ -16,18 +16,12 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 1.4.4+26
+version: 1.5.0+27
 
 environment:
   # At least Flutter 3.32.1
   sdk: '>=3.8.0 <4.0.0'
 
-# Dependencies specify other packages that your package needs in order to work.
-# To automatically upgrade your package dependencies to the latest versions
-# consider running `flutter pub upgrade --major-versions`. Alternatively,
-# dependencies can be manually updated by changing the version numbers below to
-# the latest version available on pub.dev. To see which dependencies have newer
-# versions available, run `flutter pub outdated`.
 dependencies:
   flutter:
     sdk: flutter
@@ -40,14 +34,16 @@ dependencies:
   # sqlite3 macos 0.5.40 以上需要更高的macos版本，暂时固定在 0.5.40
   sqlite3_flutter_libs: 0.5.40
   # 托盘插件 linux上需要安裝：sudo apt-get install libayatana-appindicator3-dev
-  tray_manager: ^0.5.2
+#  tray_manager: ^0.5.2
+  tray_manager:
+    git:
+      url: https://github.com/aa2013/tray_manager
+      ref: custom-id
+      path: packages/tray_manager
   # 窗体管理
   window_manager: ^0.5.0
   # 开机启动
   launch_at_startup: ^0.5.1
-  # The following adds the Cupertino Icons font to your application.
-  # Use with the CupertinoIcons class for iOS style icons.
-  cupertino_icons: ^1.0.2
   # 加密
   crypto: ^3.0.3
   encrypt: ^5.0.3
@@ -72,14 +68,14 @@ dependencies:
   animated_snack_bar: ^0.4.0
   # 打开链接
   url_launcher: ^6.2.5
-  # 代码高亮
-  flutter_highlighting: ^0.9.0+11.8.0
   # 多窗口
   desktop_multi_window: ^0.2.1
   # 解析 windows 快捷方式实际地址
   resolve_windows_shortcut: ^2.0.0
   # 快捷键
   hotkey_manager: ^0.2.2
+  # Windows 注册表
+  win32_registry: ^2.1.0
   # 允许 Flutter 桌面应用检索关于屏幕大小，显示，光标位置等信息。
   screen_retriever: ^0.2.0
   # 提供一种平台无关的方式以一致的方式访问设备的文件位置系统
@@ -96,11 +92,13 @@ dependencies:
       url: https://github.com/aa2013/flutter_file_picker
       ref: modify-android-saf-intent
   # 权限请求
-  permission_handler: ^11.3.1
+  permission_handler: ^12.0.1
   # 瀑布流布局
   flutter_staggered_grid_view: ^0.7.0
-  # 图标库
-  material_design_icons_flutter: ^7.0.7296
+  # material 图标库
+  flutter_material_design_icons: ^3.0.0+7447
+  # 品牌图标库，material图标库将在 v8 版本移除所有品牌图标
+  simple_icons: ^14.6.1
   # 本地身份认证
   local_auth: ^2.2.0
   # 接受其他应用的分享操作
@@ -113,15 +111,15 @@ dependencies:
   # 月份选择
   month_picker_dialog: ^5.1.2
   # 剪贴板监听
-  clipshare_clipboard_listener: 1.2.17
-#  clipshare_clipboard_listener:
-#    path: ../clipboard_listener
+  clipshare_clipboard_listener: ^1.3.4
   # 主题切换动画
   animated_theme_switcher: ^2.0.8
   # 大文本编辑器
   re_editor: ^0.8.0
   # http请求
   http: ^1.2.2
+  stream_channel: ^2.1.4
+  web_socket_channel: ^3.0.3
   # 倒计时的 snackbar ，支持在指定的scaffold上显示
   timer_snackbar:
     git:
@@ -134,7 +132,7 @@ dependencies:
   # 二维码生成
   qr_flutter: ^4.1.0
   # 二维码扫描
-  qr_code_scanner_plus: ^2.0.10+1
+  qr_code_scanner_plus: 2.0.10+1
   # 截屏检测（Android/IOS）
   flutter_screenshot_detect:
     git:
@@ -155,12 +153,12 @@ dependencies:
     git: https://github.com/aa2013/no_screenshot.git
   # Android uri读取
   uri_file_reader: ^1.0.3
-#  uri_file_reader:
 #    path: ../uri_file_reader
   # 分词 (去除了分词文件减小压缩包体积，改为下载或导入)
   jieba_flutter:
     git:
       url: https://github.com/aa2013/jieba_flutter.git
+      ref: 87be14a040e2138740b85f7afeac800f9ca822fe
   # 粘性折叠分组，该版本至少 SDK 3.8.0
   sliver_sticky_collapsable_panel: ^3.0.0
   # 获取已安装的app（仅 Android）
@@ -175,24 +173,34 @@ dependencies:
   zip_flutter:
     git:
       url: https://github.com/aa2013/zip_flutter
-  # fix "cannot be used to imply a default content-type, please set a proper content-type in the request."
-  # 修复 群晖 文件的 PROPFIND 请求 因为尾'/'导致的 400 错误
-  webdav_client:
+  webdav_plus:
     git:
-#      url: https://github.com/zhenorzz/webdav_client.git
-      url: https://github.com/aa2013/webdav_client.git
-      ref: main
-  dart_aliyun_oss:
+      url: https://github.com/aa2013/webdav_plus.git
+      ref: custom-user-agent
+  dart_aliyun_oss: ^1.4.0
+  minio:
     git:
-      url: https://github.com/aa2013/ali_yun_oss
-      ref: main
-  minio: ^3.5.8
+      url: https://github.com/aa2013/minio-dart
+      ref: custom-user-agent
   # Android/IOS deviceId generator
   persistent_device_id: ^1.1.0
   # 滑动操作
   flutter_slidable: ^4.0.3
   # 扩展的浮动按钮
   flutter_expandable_fab: ^2.5.2
+  # 保存图片至相册
+  flutter_image_gallery_saver: ^1.1.3
+  # lua ffi
+  flutter_embed_lua:
+    git:
+      url: https://github.com/aa2013/flutter_embed_lua
+  # 可拖拉的切分视图
+  multi_split_view: ^3.6.1
+  # Color picker
+  flutter_colorpicker: ^1.1.0
+  # 原生拖拽
+  super_drag_and_drop: ^0.9.1
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
@@ -200,13 +208,9 @@ dev_dependencies:
   build_runner: ^2.1.2
   flutter_launcher_icons: ^0.13.1
 
-  # The "flutter_lints" package below contains a set of recommended lints to
-  # encourage good coding practices. The lint set provided by the package is
-  # activated in the `analysis_options.yaml` file located at the root of your
-  # package. See that file for information about deactivating specific lint
-  # rules and activating additional ones.
   flutter_lints: ^3.0.2
 flutter_launcher_icons:
+  ios: true
   android: "launcher_icon"
   image_path: "assets/images/logo/logo.png"
   min_sdk_android: 24 # android min sdk min:16, default 21
@@ -217,46 +221,48 @@ flutter_launcher_icons:
   macos:
     generate: true
     image_path: "assets/images/logo/logo.png"
-# For information on the generic Dart part of this file, see the
-# following page: https://dart.dev/tools/pub/pubspec
-
-# The following section is specific to Flutter packages.
 flutter:
-
-  # The following line ensures that the Material Icons font is
-  # included with your application, so that you can use the icons in
-  # the material Icons class.
   uses-material-design: true
-
-  # To add assets to your application, add an assets section, like this:
   assets:
     - assets/images/
-    - assets/images/logo/
-    - assets/md/
-    - assets/scripts/
-
-  # An image asset can refer to one or more resolution-specific "variants", see
-  # https://flutter.dev/assets-and-images/#resolution-aware
-
-  # For details regarding adding assets from package dependencies, see
-  # https://flutter.dev/assets-and-images/#from-packages
-
-  # To add custom fonts to your application, add a fonts section here,
-  # in this "flutter" section. Each entry in this list should have a
-  # "family" key with the font family name, and a "fonts" key with a
-  # list giving the asset and other descriptors for the font. For
-  # example:
-  # fonts:
-  #   - family: Schyler
-  #     fonts:
-  #       - asset: fonts/Schyler-Regular.ttf
-  #       - asset: fonts/Schyler-Italic.ttf
-  #         style: italic
-  #   - family: Trajan Pro
-  #     fonts:
-  #       - asset: fonts/TrajanPro.ttf
-  #       - asset: fonts/TrajanPro_Bold.ttf
-  #         weight: 700
-  #
-  # For details regarding fonts from package dependencies,
-  # see https://flutter.dev/custom-fonts/#from-packages
+    - assets/lua/
+    - assets/images/logo/logo.png
+    - assets/images/logo/logo_white.png
+    - path: assets/images/logo/logo-warn.ico
+      platforms:
+        - windows
+    - path: assets/images/logo/logo-warn.png
+      platforms:
+        - windows
+        - linux
+        - macos
+    - path: assets/images/logo/logo.ico
+      platforms:
+        - windows
+    - path: assets/images/logo/root.png
+      platforms:
+        - android
+    - path: assets/images/logo/shizuku.png
+      platforms:
+        - android
+    - path: assets/md/updateLogs-Android.md
+      platforms:
+        - android
+    - path: assets/md/updateLogs-Linux.md
+      platforms:
+        - linux
+    - path: assets/md/updateLogs-MacOS.md
+      platforms:
+        - macos
+    - path: assets/md/updateLogs-Windows.md
+      platforms:
+        - windows
+    - path: assets/md/updateLogs-IOS.md
+      platforms:
+        - ios
+    - path: assets/scripts/update_windows.bat
+      platforms:
+        - windows
+    - path: assets/videos/pip_example.mp4
+      platforms:
+        - ios

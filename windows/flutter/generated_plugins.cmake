@@ -8,18 +8,21 @@ list(APPEND FLUTTER_PLUGIN_LIST
   desktop_drop
   desktop_multi_window
   hotkey_manager_windows
+  irondash_engine_context
   local_auth_windows
   permission_handler_windows
   screen_retriever_windows
   share_plus
   smart_auth
   sqlite3_flutter_libs
+  super_native_extensions
   tray_manager
   url_launcher_windows
   window_manager
 )
 
 list(APPEND FLUTTER_FFI_PLUGIN_LIST
+  flutter_embed_lua
   flutter_local_notifications_windows
   jni
   zip_flutter

@@ -15,6 +15,7 @@ import 'package:clipshare/app/utils/permission_helper.dart';
 import 'package:clipshare/app/widgets/loading.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 class ForwardServerEditDialog extends StatefulWidget {
   final void Function(ForwardServerConfig serverConfig) onOk;
@@ -192,7 +193,7 @@ class _ForwardServerEditDialogState extends State<ForwardServerEditDialog> {
         client.close();
       },
       onError: (err, client) {
-        Log.error(tag, "onError $err");
+        logger.error(tag, "onError $err");
         Global.showTipsDialog(
           context: context,
           text: err.toString(),
@@ -228,14 +229,15 @@ class _ForwardServerEditDialogState extends State<ForwardServerEditDialog> {
                 onPressed: detecting
                     ? null
                     : () async {
-                        var hasPerm = await PermissionHelper.testAndroidCameraPerm();
+                        var hasPerm = await PermissionHelper.testCameraPerm();
                         if (!hasPerm) {
-                          await PermissionHelper.reqAndroidCameraPerm();
-                          hasPerm = await PermissionHelper.testAndroidCameraPerm();
+                          await PermissionHelper.reqCameraPerm();
+                          hasPerm = await PermissionHelper.testCameraPerm();
                           if (!hasPerm) {
                             Global.showTipsDialog(
                               context: context,
                               text: TranslationKey.noCameraPermission.tr,
+                              onOk: () => openAppSettings(),
                             );
                             return;
                           }
@@ -249,10 +251,10 @@ class _ForwardServerEditDialogState extends State<ForwardServerEditDialog> {
                             });
                           } else {
                             Global.showTipsDialog(context: context, text: TranslationKey.qrCodeScanError.tr);
-                            Log.warn(tag, "scan result is null");
+                            logger.warn(tag, "scan result is null");
                           }
                         } catch (err, stack) {
-                          Log.error(tag, err, stack);
+                          logger.error(tag, err, stack);
                           Global.showTipsDialog(context: context, text: TranslationKey.qrCodeScanError.tr);
                         }
                       },

@@ -1,17 +1,14 @@
 import 'dart:io';
 
 import 'package:clipshare/app/data/enums/history_content_type.dart';
-import 'package:clipshare/app/utils/constants.dart';
-import 'package:clipshare/app/utils/log.dart';
+import 'package:clipshare/app/data/enums/translation_key.dart';
 import 'package:clipshare_clipboard_listener/clipboard_manager.dart';
 import 'package:clipshare_clipboard_listener/enums.dart';
 import 'package:clipshare/app/data/enums/channelMethods/android_channel_method.dart';
 import 'package:clipshare/app/services/config_service.dart';
-import 'package:flutter/cupertino.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:get/get.dart';
-
-import '../clipboard_service.dart';
 
 class AndroidChannelService extends GetxService {
   static const tag = "AndroidChannelService";
@@ -20,14 +17,6 @@ class AndroidChannelService extends GetxService {
 
   AndroidChannelService init() {
     androidChannel = appConfig.androidChannel;
-    if (Platform.isAndroid) {
-      if (appConfig.showHistoryFloat) {
-        showHistoryFloatWindow();
-      }
-      lockHistoryFloatLoc(
-        {"loc": appConfig.lockHistoryFloatLoc},
-      );
-    }
     return this;
   }
 
@@ -56,6 +45,20 @@ class AndroidChannelService extends GetxService {
     if (!Platform.isAndroid) return;
     androidChannel.invokeMethod(
       AndroidChannelMethod.showHistoryFloatWindow.name,
+      {
+        "width": appConfig.historyFloatHandleWidth,
+        "color": appConfig.historyFloatHandleColor,
+        "applyAlphaToWholeHandle": appConfig.historyFloatHandleApplyAlphaToWholeHandle,
+        "themeMode": appConfig.appTheme.name,
+        "i18n": {
+          "title": TranslationKey.historyFloatTitle.tr,
+          "countTemplate": TranslationKey.historyFloatCountTemplate.tr,
+          "imageUnavailable": TranslationKey.historyFloatImageUnavailable.tr,
+          "textType": TranslationKey.text.tr,
+          "imageType": TranslationKey.image.tr,
+          "fileType": TranslationKey.file.tr,
+        },
+      },
     );
   }
 
@@ -64,6 +67,68 @@ class AndroidChannelService extends GetxService {
     if (!Platform.isAndroid) return;
     androidChannel.invokeMethod(
       AndroidChannelMethod.closeHistoryFloatWindow.name,
+    );
+  }
+
+  void setHistoryFloatHandleWidth(int width) {
+    if (!Platform.isAndroid) return;
+    androidChannel.invokeMethod(
+      AndroidChannelMethod.setHistoryFloatHandleWidth.name,
+      {"width": width},
+    );
+  }
+
+  void setHistoryFloatHandleColor(int color) {
+    if (!Platform.isAndroid) return;
+    androidChannel.invokeMethod(
+      AndroidChannelMethod.setHistoryFloatHandleColor.name,
+      {"color": color},
+    );
+  }
+
+  /// 同步把手装饰层是否跟随用户所选颜色透明度。
+  void setHistoryFloatHandleApplyAlphaToWholeHandle(bool value) {
+    if (!Platform.isAndroid) return;
+    androidChannel.invokeMethod(
+      AndroidChannelMethod.setHistoryFloatHandleApplyAlphaToWholeHandle.name,
+      {"applyAlphaToWholeHandle": value},
+    );
+  }
+
+  /// 同步历史悬浮窗主题，运行中的 Android 原生浮窗会即时切换亮暗色。
+  void setHistoryFloatThemeMode(ThemeMode mode) {
+    if (!Platform.isAndroid) return;
+    androidChannel.invokeMethod(
+      AndroidChannelMethod.setHistoryFloatThemeMode.name,
+      {"themeMode": mode.name},
+    );
+  }
+
+  Future<bool> checkAlertWindowPermission() async {
+    if (!Platform.isAndroid) return false;
+    return await androidChannel
+        .invokeMethod<bool?>(AndroidChannelMethod.checkAlertWindowPermission.name)
+        .then((v) => v ?? false);
+  }
+
+  Future<void> grantAlertWindowPermission() {
+    if (!Platform.isAndroid) return Future.value();
+    return androidChannel.invokeMethod(
+      AndroidChannelMethod.grantAlertWindowPermission.name,
+    );
+  }
+
+  void showKeepAliveFloatWindow() {
+    if (!Platform.isAndroid) return;
+    androidChannel.invokeMethod(
+      AndroidChannelMethod.showKeepAliveFloatWindow.name,
+    );
+  }
+
+  void closeKeepAliveFloatWindow() {
+    if (!Platform.isAndroid) return;
+    androidChannel.invokeMethod(
+      AndroidChannelMethod.closeKeepAliveFloatWindow.name,
     );
   }
 
@@ -94,11 +159,14 @@ class AndroidChannelService extends GetxService {
   }
 
   /// 发送通知
-  Future<int?> sendNotify(String content) {
+  Future<int?> sendNotify(String title, String content) {
     if (!Platform.isAndroid) return Future.value(null);
     return androidChannel.invokeMethod<int?>(
       AndroidChannelMethod.sendNotify.name,
-      {"content": content},
+      {
+        "title": title,
+        "content": content,
+      },
     );
   }
 

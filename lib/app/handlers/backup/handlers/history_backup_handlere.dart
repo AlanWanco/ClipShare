@@ -29,7 +29,7 @@ class HistoryBackupHandler with BaseBackupHandler {
   Stream<Uint8List> loadData(Directory tempDir) async* {
     var lastId = 0;
     while (true) {
-      var list = await historyDao.getHistoriesPage(appConfig.userId, lastId);
+      var list = await historyDao.getHistoriesPage(appConfig.userId, lastId, []);
       if (list.isEmpty) {
         break;
       }
@@ -49,7 +49,7 @@ class HistoryBackupHandler with BaseBackupHandler {
             await writer.close();
             json["content"] = relativePath;
           } else {
-            Log.debug(tag, "history ${item.id}: file not found ${file.path}");
+            logger.debug(tag, "history ${item.id}: file not found ${file.path}");
           }
         }
         yield m2.serialize(json);
@@ -76,7 +76,7 @@ class HistoryBackupHandler with BaseBackupHandler {
         await writer.close();
         map["content"] = newPath;
       } else {
-        Log.debug(tag, "file not found $tempPath");
+        logger.debug(tag, "file not found $tempPath");
       }
     }
     final history = History.fromJson(map.cast<String, dynamic>());

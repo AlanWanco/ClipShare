@@ -4,21 +4,21 @@ import 'dart:io';
 import 'package:clipshare/app/data/enums/backup_source.dart';
 import 'package:clipshare/app/data/enums/backup_type.dart';
 import 'package:clipshare/app/data/enums/forward_server_status.dart';
-import 'package:clipshare/app/data/enums/white_black_mode.dart';
-import 'package:clipshare/app/data/models/white_black_rule.dart';
 import 'package:clipshare/app/exceptions/user_cancel_backup.dart';
 import 'package:clipshare/app/handlers/backup/backup_handler.dart';
 import 'package:clipshare/app/handlers/storage/storage_client.dart';
 import 'package:clipshare/app/listeners/forward_status_listener.dart';
 import 'package:clipshare/app/listeners/screen_opened_listener.dart';
-import 'package:clipshare/app/modules/about_module/about_controller.dart';
-import 'package:clipshare/app/modules/about_module/about_page.dart';
 import 'package:clipshare/app/modules/history_module/history_controller.dart';
+import 'package:clipshare/app/modules/licenses_module/licenses_controller.dart';
+import 'package:clipshare/app/modules/licenses_module/licenses_page.dart';
 import 'package:clipshare/app/modules/log_module/log_controller.dart';
 import 'package:clipshare/app/modules/log_module/log_page.dart';
+import 'package:clipshare/app/modules/rules_module/rules_controller.dart';
 import 'package:clipshare/app/modules/statistics_module/statistics_controller.dart';
 import 'package:clipshare/app/modules/statistics_module/statistics_page.dart';
-import 'package:clipshare/app/modules/views/white_black_list_page.dart';
+import 'package:clipshare/app/modules/update_log_module/update_log_controller.dart';
+import 'package:clipshare/app/modules/update_log_module/update_log_page.dart';
 import 'package:clipshare/app/services/android_notification_listener_service.dart';
 import 'package:clipshare/app/services/clipboard_source_service.dart';
 import 'package:clipshare/app/services/device_service.dart';
@@ -55,11 +55,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:notification_listener_service/notification_listener_service.dart';
-import 'package:clipshare/app/modules/search_module/search_controller.dart' as search_module;
-import 'package:uuid/uuid.dart';
-/**
- * GetX Template Generator - fb.com/htngu.99
- * */
+/// GetX Template Generator - fb.com/htngu.99
 
 class SettingsController extends GetxController with WidgetsBindingObserver implements ForwardStatusListener, ScreenOpenedObserver {
   final appConfig = Get.find<ConfigService>();
@@ -68,6 +64,7 @@ class SettingsController extends GetxController with WidgetsBindingObserver impl
   final sourceService = Get.find<ClipboardSourceService>();
   final tagService = Get.find<TagService>();
   final devService = Get.find<DeviceService>();
+  final ruleController = Get.find<RulesController>();
 
   //region 属性
   final tag = "SettingsController";
@@ -85,7 +82,12 @@ class SettingsController extends GetxController with WidgetsBindingObserver impl
 
   //检查电池优化
   var ignoreBatteryHandler = IgnoreBatteryHandler();
+
+  //检查IOS相册权限
+  var iosPhotosHandler = IosPhotosHandler();
+
   final hasNotifyPerm = false.obs;
+  final hasIOSPhotosPerm = false.obs;
   final hasShizukuPerm = false.obs;
   final hasFloatPerm = false.obs;
   final hasIgnoreBattery = false.obs;
@@ -96,6 +98,15 @@ class SettingsController extends GetxController with WidgetsBindingObserver impl
   final forwardServerStatus = ForwardServerStatus.disconnected.obs;
   final updater = 0.obs;
   Timer? _screenEventTimer;
+  int _envStatusCheckSeq = 0;
+  bool _checkingAccessibilityPerm = false;
+  bool _accessibilityPermDialogPending = false;
+  static const _accessibilityPermissionRecheckDelay = Duration(seconds: 1);
+  static const _androidEnvStatusRunningRetryDelays = [
+    Duration(milliseconds: 500),
+    Duration(seconds: 1),
+    Duration(milliseconds: 1500),
+  ];
 
   //region environment status widgets
   final Rx<Widget> envStatusIcon = Rx<Widget>(envLoadingIcon);
@@ -114,11 +125,27 @@ class SettingsController extends GetxController with WidgetsBindingObserver impl
     size: 40,
   );
 
-  Color get warningBgColor => Theme.of(Get.context!).colorScheme.surface;
-  static const  normalIcon = const Icon(
+  Color get warningBgColor {
+    final theme = Theme.of(Get.context!);
+    final baseColor = theme.cardTheme.color ?? theme.colorScheme.surface;
+    final overlay = theme.colorScheme.error.withValues(alpha: theme.brightness == Brightness.dark ? 0.16 : 0.08);
+    return Color.alphaBlend(overlay, baseColor);
+  }
+
+  Color get ignoredBgColor {
+    final theme = Theme.of(Get.context!);
+    final baseColor = theme.cardTheme.color ?? theme.colorScheme.surface;
+    return Color.alphaBlend(Colors.blueGrey.withValues(alpha: theme.brightness == Brightness.dark ? 0.16 : 0.08), baseColor);
+  }
+  static const normalIcon = Icon(
     Icons.check_circle_outline_outlined,
     size: 40,
     color: Colors.blue,
+  );
+  static const ignoredIcon = Icon(
+    Icons.block_outlined,
+    size: 40,
+    color: Colors.blueGrey,
   );
 
   //region Shizuku
@@ -139,7 +166,7 @@ class SettingsController extends GetxController with WidgetsBindingObserver impl
 
   Widget get shizukuEnvNormalTipDesc => Obx(
     () => Text(
-      TranslationKey.shizukuModeRunningDescription.trParams({
+      TranslationKey.shizukuModeRunningDesc.trParams({
         'version': shizukuVersion.value?.toString() ?? "",
       }),
       style: const TextStyle(fontSize: 14, color: Color(0xff6d6d70)),
@@ -147,7 +174,7 @@ class SettingsController extends GetxController with WidgetsBindingObserver impl
   );
 
   Widget get shizukuEnvErrorTipDesc => Text(
-    TranslationKey.serverNotRunningDescription.tr,
+    TranslationKey.serverNotRunningDesc.tr,
     style: const TextStyle(fontSize: 14),
   );
 
@@ -165,12 +192,12 @@ class SettingsController extends GetxController with WidgetsBindingObserver impl
   );
 
   Widget get rootEnvNormalTipDesc => Text(
-    TranslationKey.rootModeRunningDescription.tr,
+    TranslationKey.rootModeRunningDesc.tr,
     style: const TextStyle(fontSize: 14),
   );
 
   Widget get rootEnvErrorTipDesc => Text(
-    TranslationKey.serverNotRunningDescription.tr,
+    TranslationKey.serverNotRunningDesc.tr,
     style: const TextStyle(fontSize: 14),
   );
 
@@ -196,7 +223,7 @@ class SettingsController extends GetxController with WidgetsBindingObserver impl
   );
 
   final ignoreTipDesc = Text(
-    TranslationKey.envPermissionIgnoredDescription.tr,
+    TranslationKey.envPermissionIgnoredDesc.tr,
     style: const TextStyle(fontSize: 14),
   );
 
@@ -227,10 +254,13 @@ class SettingsController extends GetxController with WidgetsBindingObserver impl
 
   @override
   void onClose() {
-    super.onClose();
+    WidgetsBinding.instance.removeObserver(this);
+    connRegService.removeForwardStatusListener(this);
+    _screenEventTimer?.cancel();
     if (Platform.isAndroid) {
       ScreenOpenedListener.inst.remove(this);
     }
+    super.onClose();
   }
 
   @override
@@ -257,83 +287,6 @@ class SettingsController extends GetxController with WidgetsBindingObserver impl
         widget: CleanDataPage(),
         beforeClosed: () {
           Get.delete<CleanDataController>();
-          return true;
-        },
-      );
-    }
-  }
-
-  void gotoFilterRuleListPage() {
-    final isSmallScreen = appConfig.isSmallScreen;
-    final homeController = Get.find<HomeController>();
-    final currentMode = appConfig.currentNotificationWhiteBlackMode.obs;
-    final page = Obx(
-      () => WhiteBlackListPage(
-        title: TranslationKey.notificationRules.tr,
-        showMode: WhiteBlackMode.all,
-        currentMode: currentMode.value,
-        showTypesFilter: false,
-        blacklist: List.from(appConfig.notificationBlackList),
-        whitelist: List.from(appConfig.notificationWhiteList),
-        onModeChanged: (mode, enabled) {
-          currentMode.value = mode;
-        },
-        onDone: (WhiteBlackMode mode, Map<WhiteBlackMode, List<FilterRule>> data) {
-          final blacklist = data[WhiteBlackMode.black]!;
-          final whitelist = data[WhiteBlackMode.white]!;
-          appConfig.setNotificationBlackWhiteList(mode, blacklist, whitelist);
-          if (!isSmallScreen) {
-            homeController.popDrawer();
-          }
-        },
-      ),
-    );
-    if (isSmallScreen) {
-      Get.to(page);
-    } else {
-      homeController.pushDrawer(widget: page);
-    }
-  }
-
-  void gotoBlackListPage() {
-    final isSmallScreen = appConfig.isSmallScreen;
-    final homeController = Get.find<HomeController>();
-    final enabled = appConfig.enableContentBlackList.obs;
-    final page = Obx(
-      () => WhiteBlackListPage(
-        title: TranslationKey.blacklistRules.tr,
-        showMode: WhiteBlackMode.black,
-        enabled: enabled.value,
-        blacklist: List.from(appConfig.contentBlackList),
-        onModeChanged: (mode, e) {
-          enabled.value = e;
-        },
-        onDone: (_, Map<WhiteBlackMode, List<FilterRule>> data) {
-          appConfig.setEnableContentBlackList(enabled.value);
-          appConfig.setContentBlacklist(data[WhiteBlackMode.black]!);
-          if (!isSmallScreen) {
-            homeController.popDrawer();
-          }
-        },
-      ),
-    );
-    if (isSmallScreen) {
-      Get.to(page);
-    } else {
-      homeController.pushDrawer(widget: page);
-    }
-  }
-
-  void gotoAboutPage() {
-    if (appConfig.isSmallScreen) {
-      Get.toNamed(Routes.ABOUT);
-    } else {
-      final homeController = Get.find<HomeController>();
-      Get.put(AboutController());
-      homeController.pushDrawer(
-        widget: AboutPage(),
-        beforeClosed: () {
-          Get.delete<AboutController>();
           return true;
         },
       );
@@ -374,6 +327,38 @@ class SettingsController extends GetxController with WidgetsBindingObserver impl
     }
   }
 
+  void gotoLicensesPage() {
+    if (appConfig.isSmallScreen) {
+      Get.toNamed(Routes.LICENSES);
+    } else {
+      final homeController = Get.find<HomeController>();
+      Get.put(LicensesController());
+      homeController.pushDrawer(
+        widget: LicensesPage(),
+        beforeClosed: () {
+          Get.delete<LicensesController>();
+          return true;
+        },
+      );
+    }
+  }
+
+  void gotoUpdateLogsPage() {
+    if (appConfig.isSmallScreen) {
+      Get.toNamed(Routes.UPDATE_LOG);
+    } else {
+      final homeController = Get.find<HomeController>();
+      Get.put(UpdateLogController());
+      homeController.pushDrawer(
+        widget: UpdateLogPage(),
+        beforeClosed: () {
+          Get.delete<UpdateLogController>();
+          return true;
+        },
+      );
+    }
+  }
+
   ///EnvironmentStatusCard click
   Future<void> onEnvironmentStatusCardClick() async {
     if (envStatusBgColor.value != warningBgColor) return;
@@ -393,61 +378,110 @@ class SettingsController extends GetxController with WidgetsBindingObserver impl
 
   ///检查必要权限
   Future<void> checkPermissions() async {
-    if (!Platform.isAndroid) {
+    if (!Platform.isAndroid && !Platform.isIOS) {
       return;
+    }
+    if(Platform.isAndroid){
+      floatHandler.hasPermission().then((v) {
+        hasFloatPerm.value = v;
+      });
+      ignoreBatteryHandler.hasPermission().then((v) {
+        hasIgnoreBattery.value = v;
+      });
+      clipboardHandler.hasPermission().then((v) {
+        hasClipboardPerm.value = v;
+      });
+      PermissionHelper.testAndroidReadSms().then((granted) {
+        //有权限或者不需要读取短信则视为有权限
+        hasSmsReadPerm.value = granted || !ruleController.enableSmsSync;
+      });
+      _checkAccessibilityPermission();
+      NotificationListenerService.isPermissionGranted().then((granted) {
+        hasNotificationRecordPerm.value = granted;
+        final androidNotificationListenerService = Get.find<AndroidNotificationListenerService>();
+        if (granted && appConfig.enableRecordNotification && !androidNotificationListenerService.listening) {
+          androidNotificationListenerService.startListening();
+        } else if (!granted && appConfig.enableRecordNotification) {
+          Global.showTipsDialog(
+            context: Get.context!,
+            text: TranslationKey.noNotificationRecordPermTips.tr,
+            showCancel: true,
+            okText: TranslationKey.goAuthorize.tr,
+            onOk: () {
+              NotificationListenerService.requestPermission();
+            },
+          );
+        }
+      });
+    }
+    if(Platform.isIOS){
+      iosPhotosHandler.hasPermission().then((v){
+        hasIOSPhotosPerm.value = v;
+      });
     }
     notifyHandler.hasPermission().then((v) {
       hasNotifyPerm.value = v;
     });
-    floatHandler.hasPermission().then((v) {
-      hasFloatPerm.value = v;
-    });
-    ignoreBatteryHandler.hasPermission().then((v) {
-      hasIgnoreBattery.value = v;
-    });
-    clipboardHandler.hasPermission().then((v) {
-      hasClipboardPerm.value = v;
-    });
-    PermissionHelper.testAndroidReadSms().then((granted) {
-      //有权限或者不需要读取短信则视为有权限
-      hasSmsReadPerm.value = granted || !appConfig.enableSmsSync;
-    });
-    PermissionHelper.testAndroidAccessibilityPerm().then((granted) {
-      hasAccessibilityPerm.value = granted;
+  }
+
+  ///检查无障碍权限，来源记录启用时先静默自动授权，失败后再提示用户手动处理
+  Future<void> _checkAccessibilityPermission() async {
+    if (_checkingAccessibilityPerm) {
+      return;
+    }
+    _checkingAccessibilityPerm = true;
+    try {
+      var granted = await PermissionHelper.testAndroidAccessibilityPerm();
       if (!granted && !appConfig.ignoreAccessibility && appConfig.sourceRecord) {
-        Global.showTipsDialog(
-          context: Get.context!,
-          text: TranslationKey.noAccessibilityPermTips.tr,
-          showCancel: true,
-          okText: TranslationKey.goAuthorize.tr,
-          onOk: () {
-            PermissionHelper.reqAndroidAccessibilityPerm();
-          },
-          showNeutral: true,
-          neutralText: TranslationKey.notNow.tr,
-          onNeutral: () {
-            appConfig.ignoreAccessibility = true;
-          },
-        );
+        //启动或恢复页面时先尝试自动授权，避免支持 Shizuku/root 的设备仍然弹出手动授权提示
+        granted = await PermissionHelper.tryAutoGrantAndroidAccessibilityPerm();
       }
-    });
-    NotificationListenerService.isPermissionGranted().then((granted) {
-      hasNotificationRecordPerm.value = granted;
-      final androidNotificationListenerService = Get.find<AndroidNotificationListenerService>();
-      if (granted && appConfig.enableRecordNotification && !androidNotificationListenerService.listening) {
-        androidNotificationListenerService.startListening();
-      } else if (!granted && appConfig.enableRecordNotification) {
-        Global.showTipsDialog(
-          context: Get.context!,
-          text: TranslationKey.noNotificationRecordPermTips.tr,
-          showCancel: true,
-          okText: TranslationKey.goAuthorize.tr,
-          onOk: () {
-            NotificationListenerService.requestPermission();
-          },
-        );
+      if (!granted && !appConfig.ignoreAccessibility && appConfig.sourceRecord) {
+        //系统写入无障碍设置后服务状态可能延迟刷新，短暂等待后复查可减少误弹窗
+        await Future.delayed(_accessibilityPermissionRecheckDelay);
+        granted = await PermissionHelper.testAndroidAccessibilityPerm();
       }
-    });
+      hasAccessibilityPerm.value = granted;
+      if (granted || appConfig.ignoreAccessibility || !appConfig.sourceRecord || _accessibilityPermDialogPending) {
+        return;
+      }
+      _accessibilityPermDialogPending = true;
+      final dialog = await Global.showTipsDialog(
+        context: Get.context!,
+        text: TranslationKey.noAccessibilityPermTips.tr,
+        showCancel: true,
+        okText: TranslationKey.goAuthorize.tr,
+        onOk: () async {
+          await requestAccessibilityPermissionAndRefresh();
+        },
+        onCancel: () {
+          _accessibilityPermDialogPending = false;
+        },
+        showNeutral: true,
+        neutralText: TranslationKey.notNow.tr,
+        onNeutral: () {
+          _accessibilityPermDialogPending = false;
+          appConfig.ignoreAccessibility = true;
+        },
+      );
+      if (dialog == null) {
+        _accessibilityPermDialogPending = false;
+      } else {
+        dialog.future.whenComplete(() => _accessibilityPermDialogPending = false);
+      }
+    } finally {
+      _checkingAccessibilityPerm = false;
+    }
+  }
+
+  ///请求无障碍授权后刷新设置页权限状态，避免自动授权成功后界面仍显示未授权
+  Future<bool> requestAccessibilityPermissionAndRefresh() async {
+    final requested = await PermissionHelper.reqAndroidAccessibilityPerm();
+    //自动写入 secure settings 后系统服务列表可能稍后才同步，等待后再复查一次
+    await Future.delayed(_accessibilityPermissionRecheckDelay);
+    final granted = requested || await PermissionHelper.testAndroidAccessibilityPerm();
+    hasAccessibilityPerm.value = granted;
+    return granted;
   }
 
   ///检查 Android 工作环境必要权限
@@ -455,47 +489,9 @@ class SettingsController extends GetxController with WidgetsBindingObserver impl
     if (!Platform.isAndroid) {
       return;
     }
+    final checkSeq = ++_envStatusCheckSeq;
+    _showAndroidEnvStatusLoading();
     final mode = appConfig.workingMode;
-    bool hasPermission = true;
-    bool listening = await clipboardManager.checkIsRunning();
-    if (!listening) {
-      await Future.delayed(2.s, () async {
-        listening = await clipboardManager.checkIsRunning();
-      });
-    }
-    switch (mode) {
-      case EnvironmentType.shizuku:
-        hasPermission = await clipboardManager.checkPermission(mode!);
-        envStatusTipContent.value = hasPermission ? shizukuEnvNormalTipContent : shizukuEnvErrorTipContent;
-        envStatusTipDesc.value = hasPermission && listening ? shizukuEnvNormalTipDesc : shizukuEnvErrorTipDesc;
-        if (hasPermission && shizukuVersion.value == null) {
-          shizukuVersion.value = await clipboardManager.getShizukuVersion();
-        }
-        break;
-      case EnvironmentType.root:
-        hasPermission = await clipboardManager.checkPermission(mode!);
-        envStatusTipContent.value = hasPermission && listening ? rootEnvNormalTipContent : rootEnvErrorTipContent;
-        envStatusTipDesc.value = hasPermission && listening ? rootEnvNormalTipDesc : rootEnvErrorTipDesc;
-        break;
-      case EnvironmentType.androidPre10:
-        hasPermission = true;
-        envStatusTipContent.value = androidPre10TipContent;
-        envStatusTipDesc.value = androidPre10EnvNormalTipDesc;
-        break;
-      default:
-        hasPermission = true;
-        envStatusTipContent.value = ignoreTipContent;
-        envStatusTipDesc.value = ignoreTipDesc;
-    }
-    envStatusIcon.value = hasPermission && listening ? normalIcon : warningIcon;
-    envStatusBgColor.value = hasPermission && listening ? null : warningBgColor;
-    hasWorkingModePerm.value = hasPermission;
-    //有Shizuku/root权限后检查剪贴板权限状态
-    if(hasPermission){
-      clipboardHandler.hasPermission().then((v) {
-        hasClipboardPerm.value = v;
-      });
-    }
     if (restart) {
       await clipboardManager.stopListening();
       await clipboardManager.startListening(
@@ -503,8 +499,126 @@ class SettingsController extends GetxController with WidgetsBindingObserver impl
         way: appConfig.clipboardListeningWay,
         notificationContentConfig: ClipboardService.defaultNotificationContentConfig,
       );
-      checkAndroidEnvPermission();
     }
+    bool hasPermission = true;
+    bool listening = true;
+    var ignoreWorkingMode = false;
+    switch (mode) {
+      case EnvironmentType.shizuku:
+        hasPermission = await clipboardManager.checkPermission(mode!);
+        if (checkSeq != _envStatusCheckSeq) {
+          return;
+        }
+        if (hasPermission) {
+          // Shizuku 前台通知可能先于 user service 绑定完成出现，启动期需要短暂等待 ready 后再下结论。
+          listening = await _checkAndroidListenerRunningWithGracePeriod(checkSeq);
+          if (checkSeq != _envStatusCheckSeq) {
+            return;
+          }
+        } else {
+          listening = false;
+        }
+        envStatusTipContent.value = hasPermission ? shizukuEnvNormalTipContent : shizukuEnvErrorTipContent;
+        envStatusTipDesc.value = hasPermission && listening ? shizukuEnvNormalTipDesc : shizukuEnvErrorTipDesc;
+        if (hasPermission && shizukuVersion.value == null) {
+          shizukuVersion.value = await clipboardManager.getShizukuVersion();
+          if (checkSeq != _envStatusCheckSeq) {
+            return;
+          }
+        }
+        break;
+      case EnvironmentType.root:
+        hasPermission = await clipboardManager.checkPermission(mode!);
+        if (checkSeq != _envStatusCheckSeq) {
+          return;
+        }
+        if (hasPermission) {
+          // Root 模式同样依赖前台服务与监听线程完成初始化，避免冷启动时把中间态误报为失败。
+          listening = await _checkAndroidListenerRunningWithGracePeriod(checkSeq);
+          if (checkSeq != _envStatusCheckSeq) {
+            return;
+          }
+        } else {
+          listening = false;
+        }
+        envStatusTipContent.value = hasPermission && listening ? rootEnvNormalTipContent : rootEnvErrorTipContent;
+        envStatusTipDesc.value = hasPermission && listening ? rootEnvNormalTipDesc : rootEnvErrorTipDesc;
+        break;
+      case EnvironmentType.androidPre10:
+        hasPermission = true;
+        listening = true;
+        envStatusTipContent.value = androidPre10TipContent;
+        envStatusTipDesc.value = androidPre10EnvNormalTipDesc;
+        break;
+      default:
+        ignoreWorkingMode = true;
+        hasPermission = true;
+        listening = true;
+        envStatusTipContent.value = ignoreTipContent;
+        envStatusTipDesc.value = ignoreTipDesc;
+    }
+    envStatusIcon.value = ignoreWorkingMode ? ignoredIcon : (hasPermission && listening ? normalIcon : warningIcon);
+    envStatusBgColor.value = ignoreWorkingMode ? ignoredBgColor : (hasPermission && listening ? null : warningBgColor);
+    hasWorkingModePerm.value = hasPermission;
+    //有Shizuku/root权限后检查剪贴板权限状态
+    if(hasPermission){
+      clipboardHandler.hasPermission().then((v) {
+        hasClipboardPerm.value = v;
+      });
+    }
+  }
+
+  /// 在提权工作模式启动期确认剪贴板监听是否已就绪。
+  ///
+  /// Shizuku/root 的前台通知可能早于实际监听服务 ready 出现；这里用有界短重试区分
+  /// “仍在启动中”和“确认未运行”，避免冷启动时一次 false 直接把设置页渲染成错误状态。
+  Future<bool> _checkAndroidListenerRunningWithGracePeriod(int checkSeq) async {
+    var listening = await clipboardManager.checkIsRunning();
+    if (listening) {
+      return true;
+    }
+    for (final delay in _androidEnvStatusRunningRetryDelays) {
+      await Future.delayed(delay);
+      if (checkSeq != _envStatusCheckSeq) {
+        return false;
+      }
+      listening = await clipboardManager.checkIsRunning();
+      if (listening) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /// 标记 Shizuku 当前不可用。
+  ///
+  /// 该方法只更新界面状态，不调用 Shizuku 权限、版本或监听检查 API，用于 binder
+  /// 断开、授权被撤销等远端服务可能已经失效的回调路径。
+  void markShizukuUnavailable() {
+    if (!Platform.isAndroid || appConfig.workingMode != EnvironmentType.shizuku) {
+      return;
+    }
+    _envStatusCheckSeq++;
+    shizukuVersion.value = null;
+    envStatusIcon.value = warningIcon;
+    envStatusBgColor.value = warningBgColor;
+    envStatusTipContent.value = shizukuEnvErrorTipContent;
+    envStatusTipDesc.value = shizukuEnvErrorTipDesc;
+    hasWorkingModePerm.value = false;
+    hasShizukuPerm.value = false;
+    // Shizuku 失效后，依赖提权环境的剪贴板监听也按不可用展示，避免界面保留旧状态。
+    hasClipboardPerm.value = false;
+  }
+
+  /// Shows a transient checking state before Android environment status is refreshed.
+  void _showAndroidEnvStatusLoading() {
+    envStatusIcon.value = envLoadingIcon;
+    envStatusTipContent.value = Text(
+      TranslationKey.envStatusLoadingText.tr,
+      style: const TextStyle(fontSize: 16),
+    );
+    envStatusTipDesc.value = const SizedBox.shrink();
+    envStatusBgColor.value = null;
   }
 
   ///跳转密码设置页面
@@ -526,18 +640,9 @@ class SettingsController extends GetxController with WidgetsBindingObserver impl
   }
 
   @override
-  void onForwardServerConnected() {
-    forwardServerStatus.value = ForwardServerStatus.connected;
-  }
-
-  @override
-  void onForwardServerConnecting() {
-    forwardServerStatus.value = ForwardServerStatus.connecting;
-  }
-
-  @override
-  void onForwardServerDisconnected() {
-    forwardServerStatus.value = ForwardServerStatus.disconnected;
+  void onForwardServerStatusChanged(ForwardServerStatus status) {
+    logger.info(tag, "onForwardServerStatusChanged $status");
+    forwardServerStatus.value = status;
   }
 
   //region 备份与恢复
@@ -664,7 +769,7 @@ class SettingsController extends GetxController with WidgetsBindingObserver impl
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(item.tr),
-                    ?desc,
+                    if (desc != null) desc,
                   ],
                 ),
               ),
@@ -759,32 +864,37 @@ class SettingsController extends GetxController with WidgetsBindingObserver impl
         }
       } else {
         //文件备份完毕，若为存储服务，上传，显示上传进度弹窗
-        if(backupSource == BackupSource.local || storageClient == null){
-          return;
+        var text = TranslationKey.exportSuccess.tr;
+        if (storageClient != null) {
+          final loadingController = LoadingProgressController(total: 100);
+          final dialog = Global.showLoadingDialog(
+            context: context,
+            dismissible: false,
+            loadingText: TranslationKey.uploading.tr,
+            controller: loadingController,
+          );
+          final backupFileName = File(result.localPath!).fileName;
+          final uploadSuccess = await storageClient.uploadFile(
+            "backup/$backupFileName",
+            result.localPath!,
+            onProgress: (count, total) {
+              int percentage = (count * 100 / total).toInt();
+              loadingController.update(percentage);
+            },
+          );
+          await dialog.close();
+          if(uploadSuccess){
+            File(result.localPath!).delete();
+          }
+          else {
+            text = TranslationKey.exportFailedAndViewLogs.tr;
+          }
         }
-        final loadingController = LoadingProgressController(total: 100);
-        final dialog = Global.showLoadingDialog(
-          context: context,
-          dismissible: false,
-          loadingText: TranslationKey.uploading.tr,
-          controller: loadingController,
-        );
-        final backupFileName = File(result.localPath!).fileName;
-        final uploadSuccess = await storageClient!.uploadFile(
-          "backup/$backupFileName",
-          result.localPath!,
-          onProgress: (count, total) {
-            int percentage = (count * 100 / total).toInt();
-            loadingController.update(percentage);
-          },
-        );
-        await dialog.close();
-        final text = uploadSuccess ? TranslationKey.exportSuccess.tr : TranslationKey.exportFailedAndViewLogs.tr;
         Global.showTipsDialog(text: text, context: context);
-        File(result.localPath!).delete();
       }
     } catch (err, stack) {
-      Log.error(tag, "$err,$stack");
+      logger.error(tag, "$err,$stack");
+      Global.showTipsDialog(text: TranslationKey.exportFailedAndViewLogs.tr, context: context);
     } finally {
       dialog.close();
       //恢复截图复制
@@ -930,15 +1040,12 @@ class SettingsController extends GetxController with WidgetsBindingObserver impl
       } else {
         Global.showTipsDialog(context: context, title: TranslationKey.importSuccess.tr, text: TranslationKey.restoreRestartPrompt.tr);
         final historyController = Get.find<HistoryController>();
-        final searchController = Get.find<search_module.SearchController>();
-        sourceService.init();
         devService.init();
         tagService.init();
-        searchController.refreshData();
         historyController.refreshData();
       }
     } catch (err, stack) {
-      Log.error(tag, "$err,$stack");
+      logger.error(tag, "$err,$stack");
     } finally {
       dialog.close();
       //恢复截图复制
@@ -965,7 +1072,7 @@ class SettingsController extends GetxController with WidgetsBindingObserver impl
       if (!appConfig.stopListeningOnScreenClosed) {
         return;
       }
-      Log.debug(tag, "start listening on screen opened over 2 seconds");
+      logger.debug(tag, "start listening on screen opened over 2 seconds");
       clipboardManager.startListening(
         env: appConfig.workingMode,
         way: appConfig.clipboardListeningWay,
@@ -985,7 +1092,7 @@ class SettingsController extends GetxController with WidgetsBindingObserver impl
       if (!appConfig.stopListeningOnScreenClosed) {
         return;
       }
-      Log.debug(tag, "stopping listening on screen closed over 1 minutes");
+      logger.debug(tag, "stopping listening on screen closed over 1 minutes");
       clipboardManager.stopListening();
     });
   }

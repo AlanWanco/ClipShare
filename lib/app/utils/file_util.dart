@@ -5,8 +5,27 @@ import 'dart:typed_data';
 import 'package:archive/archive_io.dart';
 import 'package:clipshare/app/utils/extensions/string_extension.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/services.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:uuid/uuid.dart';
 import 'package:path/path.dart' as path;
+
+///目录选择与可写性校验结果。
+class WritableDirectoryPickResult {
+  final String? path;
+  final bool isUnwritable;
+
+  const WritableDirectoryPickResult._({this.path, required this.isUnwritable});
+
+  ///用户取消目录选择。
+  const WritableDirectoryPickResult.cancelled() : this._(isUnwritable: false);
+
+  ///用户选择的目录不可写。
+  const WritableDirectoryPickResult.unwritable() : this._(isUnwritable: true);
+
+  ///用户选择的可写目录。
+  const WritableDirectoryPickResult.writable(String path) : this._(path: path, isUnwritable: false);
+}
 
 class FileUtil {
   FileUtil._private();
@@ -24,6 +43,18 @@ class FileUtil {
     } catch (e) {
       return false;
     }
+  }
+
+  ///选择目录并校验其是否可写，以便调用方区分取消选择和不可写目录。
+  static Future<WritableDirectoryPickResult> pickWritableDirectory() async {
+    final directory = await FilePicker.platform.getDirectoryPath(lockParentWindow: true);
+    if (directory == null) {
+      return const WritableDirectoryPickResult.cancelled();
+    }
+    if (!testWriteable(directory)) {
+      return const WritableDirectoryPickResult.unwritable();
+    }
+    return WritableDirectoryPickResult.writable(Directory(directory).absolute.path.normalizePath);
   }
 
   ///递归获取文件夹大小
@@ -133,5 +164,23 @@ class FileUtil {
       print('解压ZIP文件时出错: $e');
       rethrow;
     }
+  }
+
+
+  /// 复制 assets 文件到临时目录
+  static Future<String> copyAssetToTemp(String assetPath) async {
+    // 1. 读取 assets 文件内容
+    final byteData = await rootBundle.load(assetPath);
+
+    // 2. 获取临时目录
+    final tempDir = await getTemporaryDirectory();
+    final tempFile = File('${tempDir.path}/${assetPath.split('/').last}');
+
+    // 3. 将 assets 写入临时文件
+    await tempFile.writeAsBytes(
+      byteData.buffer.asUint8List(byteData.offsetInBytes, byteData.lengthInBytes),
+    );
+
+    return tempFile.absolute.path;
   }
 }
