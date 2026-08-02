@@ -944,7 +944,7 @@ class SocketService extends GetxService with ScreenOpenedObserver, DataSender {
     if (!manual && appConfig.onlyManualDiscoverySubNet) {
       return tasks;
     }
-    var interfaces = (await NetworkInterface.list()).where((itf) => !appConfig.shouldIgnoreDiscoveryInterface(itf));
+    var interfaces = (await NetworkInterface.list()).where((itf) => !appConfig.noDiscoveryIfs.contains(itf.name));
     final expendAddress = interfaces.map((itf) => itf.addresses).expand((address) => address);
     final ipv4Address = expendAddress.where((address) => address.type == InternetAddressType.IPv4);
     for (var address in ipv4Address) {
@@ -1766,7 +1766,7 @@ class SocketService extends GetxService with ScreenOpenedObserver, DataSender {
   ]) async {
     const ipv4Type = InternetAddressType.IPv4;
     final interfaces = (await NetworkInterface.list())
-        .where((itf) => !appConfig.shouldIgnoreDiscoveryInterface(itf))
+        .where((itf) => !appConfig.noDiscoveryIfs.contains(itf.name))
         .where((itf) => itf.addresses.any((addr) => addr.type == ipv4Type));
 
     final sockets = <RawDatagramSocket>[];
