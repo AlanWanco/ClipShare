@@ -471,6 +471,7 @@ class HistoryController extends GetxController with WidgetsBindingObserver imple
           var md52 = await File(content).md5;
           //两次的图片存在且相同，跳过。
           if (md51 == md52 && md51 != null) {
+            await _deleteWaylandTempImageIfNeeded(content);
             return;
           }
         }
@@ -550,6 +551,22 @@ class HistoryController extends GetxController with WidgetsBindingObserver imple
       return true;
     }
     return false;
+  }
+
+  Future<void> _deleteWaylandTempImageIfNeeded(String path) async {
+    if (!Platform.isLinux || !path.contains('/wl-clip-')) {
+      return;
+    }
+    final file = File(path);
+    if (!await file.exists()) {
+      return;
+    }
+    try {
+      await file.delete();
+      logger.debug(tag, 'Deleted duplicate Wayland temp image: $path');
+    } catch (err, stack) {
+      logger.warn(tag, 'Delete duplicate Wayland temp image failed: $err, $stack');
+    }
   }
 
   ///抽取历史数据的map，因为有可能是 map，后续需要反序列化为操作记录

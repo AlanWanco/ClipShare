@@ -1,3 +1,5 @@
+import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 
@@ -24,10 +26,17 @@ import 'package:uri_file_reader/uri_file_reader.dart';
 import 'package:path/path.dart' as p;
 
 class ClipboardService extends GetxService with ClipboardListener {
+  static const _waylandTempImagePrefix = 'wl-clip-';
+  static const _klipperObjectPath = '/klipper';
+  static const _klipperService = 'org.kde.klipper';
+  static const _klipperInterface = 'org.kde.klipper.klipper';
   final tag = "ClipboardService";
   final appConfig = Get.find<ConfigService>();
   final settingsController = Get.find<SettingsController>();
   var _detector = FlutterScreenshotDetect();
+  Process? _klipperTextWatcher;
+  Process? _waylandImageWatcher;
+  Future<void> _klipperReadChain = Future.value();
   final _isExcludeFormat = true.obs;
   var _pausedScreenshot = false;
   bool _recoveringShizukuBinderPermission = false;
@@ -54,8 +63,24 @@ class ClipboardService extends GetxService with ClipboardListener {
   );
   String? _lastScreenshotContent;
 
+  bool get _useWaylandImageWatcher {
+    return Platform.isLinux && Platform.environment['XDG_SESSION_TYPE'] == 'wayland';
+  }
+
+  bool get _useKlipperTextWatcher {
+    final desktop = Platform.environment['XDG_CURRENT_DESKTOP'] ?? '';
+    return Platform.isLinux && desktop.toUpperCase().contains('KDE');
+  }
+
   Future<ClipboardService> init() async {
     clipboardManager.addListener(this);
+    if (_useKlipperTextWatcher) {
+      await _startKlipperTextWatcher();
+    }
+    if (_useWaylandImageWatcher) {
+      await _cleanupWaylandTempImages();
+      await _startWaylandImageWatcher();
+    }
     if (appConfig.autoCopyImageAfterScreenShot) {
       startListenScreenshot();
     }
@@ -68,6 +93,231 @@ class ClipboardService extends GetxService with ClipboardListener {
       _isExcludeFormat.value = await clipboardManager.isEnableExcludeFormat();
     }
     return this;
+  }
+
+  Future<void> _startKlipperTextWatcher() async {
+    if (_klipperTextWatcher != null) {
+      logger.debug(tag, 'Klipper text watcher already running');
+      return;
+    }
+    try {
+      final process = await Process.start('gdbus', [
+        'monitor',
+        '--session',
+        '--dest',
+        _klipperService,
+        '--object-path',
+        _klipperObjectPath,
+      ]);
+      _klipperTextWatcher = process;
+      logger.info(tag, 'Started Klipper text watcher');
+      unawaited(
+        process.stdout
+            .transform(utf8.decoder)
+            .transform(const LineSplitter())
+            .listen((line) {
+              if (!line.contains('clipboardHistoryUpdated')) {
+                return;
+              }
+              _klipperReadChain = _klipperReadChain.whenComplete(
+                _readTextFromKlipper,
+              );
+            })
+            .asFuture<void>()
+            .catchError((err, stack) {
+              logger.error(tag, err, stack);
+            }),
+      );
+      unawaited(
+        process.stderr
+            .transform(utf8.decoder)
+            .transform(const LineSplitter())
+            .listen((line) {
+              if (line.trim().isEmpty) {
+                return;
+              }
+              logger.warn(tag, 'Klipper watcher: $line');
+            })
+            .asFuture<void>()
+            .catchError((err, stack) {
+              logger.error(tag, err, stack);
+            }),
+      );
+      unawaited(
+        process.exitCode.then((code) {
+          if (_klipperTextWatcher == process) {
+            _klipperTextWatcher = null;
+          }
+          logger.warn(tag, 'Klipper text watcher exited: $code');
+        }).catchError((err, stack) {
+          logger.error(tag, err, stack);
+        }),
+      );
+    } catch (err, stack) {
+      logger.error(tag, 'start Klipper text watcher failed: $err', stack);
+    }
+  }
+
+  Future<void> _readTextFromKlipper() async {
+    try {
+      final result = await Process.run('gdbus', [
+        'call',
+        '--session',
+        '--dest',
+        _klipperService,
+        '--object-path',
+        _klipperObjectPath,
+        '--method',
+        '$_klipperInterface.getClipboardContents',
+      ]);
+      if (result.exitCode != 0) {
+        logger.warn(tag, 'Read Klipper text failed: ${result.stderr}'.trim());
+        return;
+      }
+      final output = (result.stdout as String).trim();
+      final text = _parseKlipperText(output);
+      if (text == null || text.isEmpty) {
+        return;
+      }
+      logger.debug(tag, 'Klipper text captured: ${text.substring(0, min(text.length, 120))}');
+      HistoryDataListener.inst.onChanged(HistoryContentType.text, text, null);
+    } catch (err, stack) {
+      logger.error(tag, 'read Klipper text failed: $err', stack);
+    }
+  }
+
+  String? _parseKlipperText(String output) {
+    if (!output.startsWith('("') || !output.endsWith('",)')) {
+      return null;
+    }
+    final escaped = output.substring(2, output.length - 3);
+    try {
+      return jsonDecode('"$escaped"') as String;
+    } catch (_) {
+      return escaped
+          .replaceAll(r'\\', '\\u0000')
+          .replaceAll(r'\n', '\n')
+          .replaceAll(r'\t', '\t')
+          .replaceAll(r'\r', '\r')
+          .replaceAll(r'\"', '"')
+          .replaceAll('\\u0000', '\\');
+    }
+  }
+
+  Future<void> _startWaylandImageWatcher() async {
+    if (_waylandImageWatcher != null) {
+      logger.debug(tag, 'Wayland image watcher already running');
+      return;
+    }
+    try {
+      final script = r'''types=$(wl-paste --list-types 2>/dev/null)
+case "$types" in
+  *image/png*) ;;
+  *) exit 0 ;;
+esac
+tmp=$(mktemp "$1/wl-clip-XXXXXX.png") || exit 1
+if wl-paste --type image/png > "$tmp" 2>/dev/null && [ -s "$tmp" ]; then
+  printf '%s\n' "$tmp"
+else
+  rm -f "$tmp"
+fi''';
+      final process = await Process.start('wl-paste', [
+        '--watch',
+        'sh',
+        '-c',
+        script,
+        'sh',
+        appConfig.cachePath,
+      ]);
+      _waylandImageWatcher = process;
+      logger.info(tag, 'Started Wayland image watcher in ${appConfig.cachePath}');
+      unawaited(
+        process.stdout
+            .transform(utf8.decoder)
+            .transform(const LineSplitter())
+            .listen((line) {
+              final path = line.trim();
+              if (path.isEmpty) {
+                return;
+              }
+              final file = File(path);
+              if (!file.existsSync()) {
+                logger.warn(tag, 'Wayland image watcher produced missing file: $path');
+                return;
+              }
+              logger.debug(tag, 'Wayland image captured: $path');
+              HistoryDataListener.inst.onChanged(
+                HistoryContentType.image,
+                path,
+                null,
+              );
+            })
+            .asFuture<void>()
+            .catchError((err, stack) {
+              logger.error(tag, err, stack);
+            }),
+      );
+      unawaited(
+        process.stderr
+            .transform(utf8.decoder)
+            .transform(const LineSplitter())
+            .listen((line) {
+              if (line.trim().isEmpty) {
+                return;
+              }
+              logger.warn(tag, 'wl-paste: $line');
+            })
+            .asFuture<void>()
+            .catchError((err, stack) {
+              logger.error(tag, err, stack);
+            }),
+      );
+      unawaited(
+        process.exitCode.then((code) {
+          if (_waylandImageWatcher == process) {
+            _waylandImageWatcher = null;
+          }
+          logger.warn(tag, 'Wayland image watcher exited: $code');
+        }).catchError((err, stack) {
+          logger.error(tag, err, stack);
+        }),
+      );
+    } catch (err, stack) {
+      logger.error(tag, 'start Wayland image watcher failed: $err', stack);
+    }
+  }
+
+  Future<void> _cleanupWaylandTempImages([
+    Duration maxAge = const Duration(days: 1),
+  ]) async {
+    final cacheDir = Directory(appConfig.cachePath);
+    if (!await cacheDir.exists()) {
+      return;
+    }
+    final now = DateTime.now();
+    var removed = 0;
+    await for (final entity in cacheDir.list()) {
+      if (entity is! File) {
+        continue;
+      }
+      final fileName = entity.uri.pathSegments.last;
+      if (!fileName.startsWith(_waylandTempImagePrefix) || !fileName.endsWith('.png')) {
+        continue;
+      }
+      try {
+        final modified = await entity.lastModified();
+        if (now.difference(modified) < maxAge) {
+          continue;
+        }
+        await entity.delete();
+        removed++;
+      } catch (err, stack) {
+        logger.warn(tag, 'Cleanup stale Wayland temp image failed: $err, $stack');
+      }
+    }
+    if (removed > 0) {
+      logger.info(tag, 'Removed $removed stale Wayland temp images');
+    }
   }
 
   void startListenScreenshot() {
@@ -342,6 +592,16 @@ class ClipboardService extends GetxService with ClipboardListener {
   void onClose() {
     clipboardManager.removeListener(this);
     _detector.dispose();
+    if (_klipperTextWatcher != null) {
+      logger.info(tag, 'Stopping Klipper text watcher');
+    }
+    _klipperTextWatcher?.kill();
+    _klipperTextWatcher = null;
+    if (_waylandImageWatcher != null) {
+      logger.info(tag, 'Stopping Wayland image watcher');
+    }
+    _waylandImageWatcher?.kill();
+    _waylandImageWatcher = null;
     super.onClose();
   }
 }
