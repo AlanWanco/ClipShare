@@ -1005,6 +1005,12 @@ class EnUSTranslation extends AbstractTranslations {
         return "Hotkey Toggles Popup";
       case TranslationKey.closeOnSameHotKeyDesc:
         return "Use the popup hotkey to both open and close it.";
+      case TranslationKey.clickToPasteTitle:
+        return "History popup paste trigger";
+      case TranslationKey.clickToPasteDescSingle:
+        return "Current: single-click";
+      case TranslationKey.clickToPasteDescDouble:
+        return "Current: double-click";
       case TranslationKey.saveToAlbum:
         return "Save to album";
       case TranslationKey.openWithOtherApplications:
@@ -1786,9 +1792,11 @@ class EnUSTranslation extends AbstractTranslations {
       case TranslationKey.ruleDetailModeWhitelist:
         return 'Whitelist';
       case TranslationKey.ruleDetailRegexLabel:
-        return 'Rule:';
+        return 'Match rule:';
+      case TranslationKey.ruleDetailRegexTip:
+        return 'Regex is case-insensitive by default; the extraction rule only extracts the first match.';
       case TranslationKey.ruleDetailExtractContent:
-        return 'Extract content';
+        return 'Extract rule:';
       case TranslationKey.ruleDetailModeLabel:
         return 'Rule mode';
       case TranslationKey.ruleDetailActionLabel:
@@ -1945,6 +1953,16 @@ class EnUSTranslation extends AbstractTranslations {
         return "Incompatible version";
       case TranslationKey.storageWsVersionIncompatibleDialogContent:
         return "Current notification service version: @version. Minimum required: @minVersion. Please upgrade it before using storage sync.";
+      case TranslationKey.noTargetWindow:
+        return 'Paste failed: no target window was found that can receive the paste action.';
+      case TranslationKey.openTargetProcessFailed:
+        return 'Paste failed: the target process could not be opened for inspection.';
+      case TranslationKey.inspectTargetFailed:
+        return 'Paste failed: the target process integrity level could not be read. Elevated privileges may be required.';
+      case TranslationKey.inspectSelfFailed:
+        return 'Paste failed: the current process integrity level could not be read.';
+      case TranslationKey.targetIntegrityHigher:
+        return 'Paste failed: elevated privileges may be required.';
     }
   }
 }

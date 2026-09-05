@@ -40,7 +40,10 @@ import 'package:clipshare/app/services/transport/connection_registry_service.dar
 import 'package:clipshare/app/services/transport/socket_service.dart';
 import 'package:clipshare/app/services/transport/storage_service.dart';
 import 'package:clipshare/app/services/transport/transport_heartbeat_service.dart';
+import 'package:clipshare/app/handlers/storage/web_dav_client.dart';
+import 'package:clipshare/app/utils/parallerl_task.dart';
 import 'package:clipshare/app/utils/snowflake.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:get/get.dart';
 import 'package:msgpack_dart/msgpack_dart.dart' as m2;
@@ -743,6 +746,256 @@ void main() {
       expect(registry.getProtocol(peerDevId), TransportProtocol.webdav);
       expect(notifyService.connectedDevIds, contains(peerDevId));
     });
+
+    test('clearPairingSource 不带 force 保留 manual 来源', () async {
+      final deviceService = Get.find<DeviceService>();
+      // 模拟 _onDevPaired 完成 socket 配对，产生 manual 配对来源。
+      await deviceService.confirmPairingState(
+        device: _buildDevice(peerDevId, 'Peer Device'),
+        localIsPaired: true,
+        remoteIsPaired: true,
+        protocol: TransportProtocol.direct,
+        manual: true,
+      );
+      deviceService.clearPairingSource(peerDevId, TransportProtocol.direct);
+      final blocked = await deviceService.confirmPairingState(
+        device: _buildDevice(peerDevId, 'Peer Device'),
+        localIsPaired: true,
+        remoteIsPaired: true,
+        protocol: TransportProtocol.webdav,
+      );
+      // manual 来源仍会拦截 storage 自恢复。
+      expect(blocked.accepted, isFalse);
+    });
+
+    test('clearPairingSource force 可清除 manual 来源', () async {
+      final deviceService = Get.find<DeviceService>();
+      await deviceService.confirmPairingState(
+        device: _buildDevice(peerDevId, 'Peer Device'),
+        localIsPaired: true,
+        remoteIsPaired: true,
+        protocol: TransportProtocol.direct,
+        manual: true,
+      );
+      deviceService.clearPairingSource(
+        peerDevId,
+        TransportProtocol.direct,
+        force: true,
+      );
+      final accepted = await deviceService.confirmPairingState(
+        device: _buildDevice(peerDevId, 'Peer Device'),
+        localIsPaired: true,
+        remoteIsPaired: true,
+        protocol: TransportProtocol.webdav,
+      );
+      // 强制清除后允许存储接管。
+      expect(accepted.accepted, isTrue);
+    });
+
+    test('manual 配对 socket 探活失败后 storage online 可接管', () async {
+      final socketService = Get.find<SocketService>() as _TestSocketService;
+      final deviceService = Get.find<DeviceService>();
+      socketService.onlineResults[peerDevId] = false;
+
+      // 模拟 _onDevPaired 完成 socket 配对，产生 manual 配对来源（修复前会挡住存储接管）。
+      await deviceService.confirmPairingState(
+        device: _buildDevice(peerDevId, 'Peer Device'),
+        localIsPaired: true,
+        remoteIsPaired: true,
+        protocol: TransportProtocol.direct,
+        manual: true,
+      );
+      registry.addDevice(
+        DevInfo(peerDevId, 'Peer Device', 'android'),
+        TransportProtocol.direct,
+      );
+
+      final sessionFuture = wsServer.acceptedSessions.stream.first;
+      await storageService.start();
+      final session = await sessionFuture;
+      await _pumpAsyncQueue();
+      notifyService.clear();
+
+      await session.send(
+        jsonEncode(
+          WsMsgData(
+            WsMsgType.online,
+            jsonEncode(<String, dynamic>{
+              'ipList': <String>[],
+              'port': 9527,
+            }),
+            peerDevId,
+          ).toJson(),
+        ),
+      );
+      await _waitForProtocol(registry, peerDevId, TransportProtocol.webdav);
+
+      expect(socketService.testedDevIds, contains(peerDevId));
+      expect(registry.getProtocol(peerDevId), TransportProtocol.webdav);
+      expect(notifyService.connectedDevIds, contains(peerDevId));
+    });
+
+    test('存储接管后 socket 重连循环立即退出', () async {
+      final socketService = Get.find<SocketService>() as _TestSocketService;
+      registry.addDevice(
+        DevInfo(peerDevId, 'Peer Device', 'android'),
+        TransportProtocol.webdav,
+      );
+      await socketService.reconnectOnce(peerDevId);
+      // 存储已接管，重连循环应直接退出，不再尝试探活或直连。
+      expect(socketService.testedDevIds, isNot(contains(peerDevId)));
+      expect(socketService.reconnectAttempts, isEmpty);
+    });
+
+    test('未接管时重连循环仍按 probe→直连 顺序执行', () async {
+      final socketService = Get.find<SocketService>() as _TestSocketService;
+      dbService.deviceById[peerDevId] =
+          _buildDevice(peerDevId, 'Peer Device').copyWith(
+        internalAddress: '1.2.3.4:9527',
+      );
+      await socketService.reconnectOnce(peerDevId);
+      // 未接管时保持原有重连顺序：先探活，再尝试内网直连。
+      expect(socketService.testedDevIds, contains(peerDevId));
+      expect(socketService.reconnectAttempts, contains('direct:$peerDevId'));
+    });
+  });
+
+  group('WebDAV direct-first fallback', () {
+    late _TestWebDavServer webDavServer;
+    late WebDAVClient client;
+
+    setUp(() async {
+      Get.testMode = true;
+      Get.put(ConfigService());
+      webDavServer = _TestWebDavServer();
+      await webDavServer.start();
+      await webDavServer.createDirectory('/clipshare');
+      client = WebDAVClient(
+        WebDAVConfig(
+          server: webDavServer.uri.toString(),
+          username: 'tester',
+          password: 'secret',
+          baseDir: '/clipshare',
+          displayName: 'test-webdav-direct-first',
+        ),
+      );
+    });
+
+    tearDown(() async {
+      await webDavServer.dispose();
+      Get.reset();
+    });
+
+    test('direct file creation succeeds without directory fallback', () async {
+      const path = '/direct/file.txt';
+
+      expect(
+        await client.createFile(
+          path,
+          Uint8List.fromList(utf8.encode('direct')),
+          createDir: true,
+        ),
+        isTrue,
+      );
+
+      expect(
+        webDavServer.requests,
+        <String>['PUT /clipshare/direct/file.txt'],
+      );
+    });
+
+    test('list directory sends one propfind without preflight directory probe', () async {
+      await webDavServer.createDirectory('/clipshare/list-target');
+      await webDavServer.writeBytes('/clipshare/list-target/file.txt', utf8.encode('list'));
+
+      final items = await client.list(path: '/list-target');
+
+      expect(items.map((item) => item.name), contains('file.txt'));
+      expect(webDavServer.requests, <String>['PROPFIND /clipshare/list-target']);
+    });
+
+    test('readFileBytes sends one get without preflight file probe', () async {
+      const path = '/read-target/file.txt';
+      await webDavServer.writeBytes('/clipshare$path', utf8.encode('read'));
+
+      final bytes = await client.readFileBytes(path);
+
+      expect(utf8.decode(bytes!), 'read');
+      expect(webDavServer.requests, <String>['GET /clipshare/read-target/file.txt']);
+    });
+
+    test('failed direct file creation cascades directories before retrying', () async {
+      const path = '/fallback/parent/file.txt';
+      webDavServer.failPutOnce('/clipshare$path');
+
+      expect(
+        await client.createFile(
+          path,
+          Uint8List.fromList(utf8.encode('fallback')),
+          createDir: true,
+        ),
+        isTrue,
+      );
+
+      expect(webDavServer.requests, <String>[
+        'PUT /clipshare/fallback/parent/file.txt',
+        'MKCOL /clipshare/fallback/parent',
+        'PROPFIND /clipshare/fallback/parent',
+        'MKCOL /clipshare/fallback',
+        'MKCOL /clipshare/fallback/parent',
+        'PUT /clipshare/fallback/parent/file.txt',
+      ]);
+    });
+
+    test('failed direct directory creation cascades each directory level', () async {
+      const path = '/directory/parent/child';
+      webDavServer.failMkColOnce('/clipshare$path');
+
+      expect(await client.createDirectory(path), isTrue);
+
+      expect(webDavServer.requests, <String>[
+        'MKCOL /clipshare/directory/parent/child',
+        'PROPFIND /clipshare/directory/parent/child',
+        'MKCOL /clipshare/directory',
+        'MKCOL /clipshare/directory/parent',
+        'MKCOL /clipshare/directory/parent/child',
+      ]);
+    });
+
+    test('existing directory stops after direct existence confirmation', () async {
+      const path = '/existing/parent/child';
+      await webDavServer.createDirectory('/clipshare$path');
+
+      expect(await client.createDirectory(path), isTrue);
+
+      expect(webDavServer.requests, <String>[
+        'MKCOL /clipshare/existing/parent/child',
+        'PROPFIND /clipshare/existing/parent/child',
+      ]);
+    });
+
+    test('returns false when directory fallback succeeds but file retry fails', () async {
+      const path = '/retry-fails/parent/file.txt';
+      webDavServer.failPut('/clipshare$path');
+
+      expect(
+        await client.createFile(
+          path,
+          Uint8List.fromList(utf8.encode('failed')),
+          createDir: true,
+        ),
+        isFalse,
+      );
+
+      expect(webDavServer.requests, <String>[
+        'PUT /clipshare/retry-fails/parent/file.txt',
+        'MKCOL /clipshare/retry-fails/parent',
+        'PROPFIND /clipshare/retry-fails/parent',
+        'MKCOL /clipshare/retry-fails',
+        'MKCOL /clipshare/retry-fails/parent',
+        'PUT /clipshare/retry-fails/parent/file.txt',
+      ]);
+    });
   });
 }
 
@@ -914,6 +1167,9 @@ class _TestConfigService extends GetxService implements ConfigService {
 
   @override
   int get userId => 1;
+
+  @override
+  final currentNetWorkType = ConnectivityResult.wifi.obs;
 
   @override
   int get port => 9527;
@@ -1218,6 +1474,7 @@ class _TestSocketService extends SocketService {
 
   final Map<String, bool> onlineResults = <String, bool>{};
   final List<String> testedDevIds = <String>[];
+  final List<String> reconnectAttempts = <String>[];
 
   @override
   bool get discovering => false;
@@ -1227,9 +1484,39 @@ class _TestSocketService extends SocketService {
     testedDevIds.add(devId);
     final online = onlineResults[devId] ?? false;
     if (!online) {
+      // 模拟真实 _closeCurrentSession 的关闭语义：清理注册表并强制清除配对来源。
       testRegistry.removeDevice(devId);
+      Get.find<DeviceService>().clearPairingSource(
+        devId,
+        TransportProtocol.direct,
+        force: true,
+      );
     }
     return online;
+  }
+
+  @override
+  Future<bool> manualConnect(
+    String host, {
+    String? sourceAddress,
+    int? port,
+    Function? onErr,
+    Map<String, dynamic> data = const {},
+    bool forward = false,
+    String? targetDevId,
+    CancelToken? cancelToken,
+  }) async {
+    reconnectAttempts.add('direct:$targetDevId');
+    return false;
+  }
+
+  @override
+  Future<bool> manualConnectByForward(
+    String devId, {
+    CancelToken? cancelToken,
+  }) async {
+    reconnectAttempts.add('forward:$devId');
+    return false;
   }
 }
 
@@ -1274,7 +1561,11 @@ class _TestWebDavServer {
   final Map<String, _StoredEntry> _entries = <String, _StoredEntry>{
     '/': _StoredEntry.directory(),
   };
+  final List<String> requests = <String>[];
   final Set<String> _mkColFailPaths = <String>{};
+  final Set<String> _mkColFailOncePaths = <String>{};
+  final Set<String> _putFailPaths = <String>{};
+  final Set<String> _putFailOncePaths = <String>{};
 
   Uri get uri => Uri.parse('http://127.0.0.1:${_server.port}');
 
@@ -1313,6 +1604,21 @@ class _TestWebDavServer {
     _mkColFailPaths.add(_normalize(path));
   }
 
+  /// 让指定路径的下一次 MKCOL 请求失败，便于验证直建失败后的级联回退。
+  void failMkColOnce(String path) {
+    _mkColFailOncePaths.add(_normalize(path));
+  }
+
+  /// 让指定路径的所有 PUT 请求失败，便于验证最终重试失败的返回结果。
+  void failPut(String path) {
+    _putFailPaths.add(_normalize(path));
+  }
+
+  /// 让指定路径的下一次 PUT 请求失败，便于验证文件直写回退流程。
+  void failPutOnce(String path) {
+    _putFailOncePaths.add(_normalize(path));
+  }
+
   Future<void> writeBytes(String path, List<int> bytes) async {
     final normalizedPath = _normalize(path);
     _ensureParentDirectories(normalizedPath);
@@ -1321,6 +1627,7 @@ class _TestWebDavServer {
 
   Future<void> _handleRequest(HttpRequest request) async {
     final path = _normalize(request.uri.path);
+    requests.add('${request.method} $path');
     switch (request.method) {
       case 'GET':
         await _handleGet(request, path);
@@ -1360,6 +1667,11 @@ class _TestWebDavServer {
       <int>[],
       (prev, element) => prev..addAll(element),
     );
+    if (_putFailPaths.contains(path) || _putFailOncePaths.remove(path)) {
+      request.response.statusCode = HttpStatus.conflict;
+      await request.response.close();
+      return;
+    }
     _ensureParentDirectories(path);
     _entries[path] = _StoredEntry.file(bytes);
     request.response.statusCode = HttpStatus.created;
@@ -1380,12 +1692,19 @@ class _TestWebDavServer {
   }
 
   Future<void> _handleMkCol(HttpRequest request, String path) async {
-    if (_mkColFailPaths.contains(path)) {
+    if (_mkColFailPaths.contains(path) || _mkColFailOncePaths.remove(path)) {
       request.response.statusCode = HttpStatus.internalServerError;
       await request.response.close();
       return;
     }
-    _ensureParentDirectories(path);
+    final parentPath = path.substring(0, path.lastIndexOf('/'));
+    final parent = parentPath.isEmpty ? '/' : parentPath;
+    final parentEntry = _entries[parent];
+    if (parentEntry == null || !parentEntry.isDirectory) {
+      request.response.statusCode = HttpStatus.conflict;
+      await request.response.close();
+      return;
+    }
     if (_entries.containsKey(path)) {
       request.response.statusCode = HttpStatus.methodNotAllowed;
       await request.response.close();

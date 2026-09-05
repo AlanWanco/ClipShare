@@ -5,12 +5,12 @@
 list(APPEND FLUTTER_PLUGIN_LIST
   clipshare_clipboard_listener
   connectivity_plus
+  desktop_click_outside
   desktop_drop
   desktop_multi_window
   hotkey_manager_windows
   irondash_engine_context
   local_auth_windows
-  permission_handler_windows
   screen_retriever_windows
   share_plus
   smart_auth

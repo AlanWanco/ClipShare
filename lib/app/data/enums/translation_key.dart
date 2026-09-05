@@ -485,6 +485,9 @@ enum TranslationKey {
   clipboardListeningWithSystemLogs,
   closeOnSameHotKeyTitle,
   closeOnSameHotKeyDesc,
+  clickToPasteTitle,
+  clickToPasteDescSingle,
+  clickToPasteDescDouble,
   openWithOtherApplications,
   saveToAlbum,
   enableAutoSyncOnScreenOpenedTitle,
@@ -880,6 +883,7 @@ enum TranslationKey {
   ruleDetailModeBlacklist,
   ruleDetailModeWhitelist,
   ruleDetailRegexLabel,
+  ruleDetailRegexTip,
   ruleDetailExtractContent,
   ruleDetailModeLabel,
   ruleDetailActionLabel,
@@ -958,7 +962,12 @@ enum TranslationKey {
   settingsOverviewPermissionIssueCount,
   settingsOverviewForwardClosed,
   permissionSettingsIOSPhotosTitle,
-  permissionSettingsIOSPhotosDesc;
+  permissionSettingsIOSPhotosDesc,
+  noTargetWindow,
+  openTargetProcessFailed,
+  inspectTargetFailed,
+  inspectSelfFailed,
+  targetIntegrityHigher;
 
   String get tr => name.tr;
 

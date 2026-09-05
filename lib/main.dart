@@ -35,6 +35,7 @@ import 'package:clipshare/app/utils/constants.dart';
 import 'package:clipshare/app/utils/extensions/platform_extension.dart';
 import 'package:clipshare/app/utils/log.dart';
 import 'package:clipshare/app/utils/windows_injector.dart';
+import 'package:clipshare/app/utils/windows_popup_utils.dart';
 import 'package:clipshare/app/widgets/base/custom_title_bar_layout.dart';
 import 'package:clipshare/app/widgets/base/system_theme_mode_sync.dart';
 import 'package:desktop_multi_window/desktop_multi_window.dart';
@@ -58,16 +59,19 @@ Future<void> main(List<String> args) async {
         String title = Constants.appName;
         DesktopMultiWindowArgs multiWindowArgs;
         if (isMultiWindow) {
-          await ensureInitialized();
           //子窗口
           final windowId = int.parse(args[1]);
           multiWindowArgs = DesktopMultiWindowArgs.fromJson(jsonDecode(args[2]));
           Device.initializeSelfGuid(multiWindowArgs.selfDeviceGuid);
+          await ensureInitialized(multiWindowArgs);
           switch (multiWindowArgs.tag) {
             case MultiWindowTag.history:
+              // 历史弹窗不激活、不抢占前台焦点，让用户打开弹窗后仍可在原应用中继续输入。
+              if (Platform.isWindows) {
+                applyNoActivateToCurrentWindow();
+              }
               home = HistoryWindow(
                 windowController: WindowController.fromWindowId(windowId),
-                args: multiWindowArgs.otherArgs,
               );
               title = multiWindowArgs.title;
               break;
@@ -100,7 +104,7 @@ Future<void> main(List<String> args) async {
   );
 }
 
-Future<void> ensureInitialized() async {
+Future<void> ensureInitialized([DesktopMultiWindowArgs? multiWindowArgs]) async {
   WidgetsFlutterBinding.ensureInitialized();
   // Desktop history can contain many large screenshots. Keep the global image
   // cache bounded so long-running sessions do not accumulate multi-GB bitmaps.
@@ -114,7 +118,7 @@ Future<void> ensureInitialized() async {
       WindowsInjector.instance.injectKeyData();
     }
   }
-  await Get.putAsync(() => WindowControlService().initWindows());
+  await Get.putAsync(() => WindowControlService(multiWindowArgs).initWindows());
 }
 
 //启动初始化失败显示错误信息
@@ -221,6 +225,7 @@ void runMain(Widget home, String title, DesktopMultiWindowArgs? args) {
     }
     locale = appConfig.language.resolveLocale(Get.deviceLocale);
   }
+
   runApp(
     ThemeProvider(
       initTheme: isDarkMode ? darkThemeData : lightThemeData,

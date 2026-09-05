@@ -5,15 +5,19 @@ import 'dart:math';
 
 import 'package:clipshare/app/utils/extensions/file_extension.dart';
 import 'package:clipshare/app/utils/extensions/number_extension.dart';
+import 'package:clipshare/app/utils/extensions/platform_extension.dart';
 import 'package:clipshare_clipboard_listener/clipboard_manager.dart';
 import 'package:clipshare_clipboard_listener/enums.dart';
 import 'package:clipshare_clipboard_listener/models/clipboard_source.dart';
 import 'package:clipshare_clipboard_listener/models/notification_content_config.dart';
 import 'package:clipshare/app/data/enums/history_content_type.dart';
+import 'package:clipshare/app/data/enums/multi_window_tag.dart';
 import 'package:clipshare/app/data/enums/translation_key.dart';
 import 'package:clipshare/app/listeners/history_data_listener.dart';
+import 'package:desktop_click_outside/desktop_click_outside.dart';
 import 'package:clipshare/app/modules/settings_module/settings_controller.dart';
 import 'package:clipshare/app/services/channels/android_channel.dart';
+import 'package:clipshare/app/services/channels/multi_window_channel.dart';
 import 'package:clipshare/app/services/config_service.dart';
 import 'package:clipshare/app/utils/constants.dart';
 import 'package:clipshare/app/utils/file_util.dart';
@@ -62,6 +66,7 @@ class ClipboardService extends GetxService with ClipboardListener {
     waitingRunningText: TranslationKey.defaultClipboardServerNotificationCfgWaitingRunningText.tr,
   );
   String? _lastScreenshotContent;
+  StreamSubscription<void>? _clickOutsideSubscription;
 
   bool get _useWaylandImageWatcher {
     return Platform.isLinux && Platform.environment['XDG_SESSION_TYPE'] == 'wayland';
@@ -80,6 +85,12 @@ class ClipboardService extends GetxService with ClipboardListener {
     if (_useWaylandImageWatcher) {
       await _cleanupWaylandTempImages();
       await _startWaylandImageWatcher();
+    }
+    if (PlatformExt.isDesktop) {
+      // 点击外部事件
+      _clickOutsideSubscription = DesktopClickOutside.instance.onClickOutside.listen((_) {
+        _closeHistoryPopupIfNeeded();
+      });
     }
     if (appConfig.autoCopyImageAfterScreenShot) {
       startListenScreenshot();
@@ -422,20 +433,38 @@ fi''';
         var retryCnt = 0;
         while (retryCnt < 5) {
           logger.debug(tag, "retry ${retryCnt + 1} times..");
-          final exists = await File(path).exists();
+          final originFile = File(path);
+          final exists = await originFile.exists();
+
           //尝试直接判断保存的文件是否存在
           if (exists) {
-            HistoryDataListener.inst.onChanged(HistoryContentType.image, path, null);
-          } else {
-            //尝试提权复制
-            final result = await clipboardManager.executePrivilegedCommand("cp $path $newPath && echo 0");
-            if (result == "0") {
-              logger.debug(tag, "attempt copy file via command success");
-              HistoryDataListener.inst.onChanged(HistoryContentType.image, path, null);
-              break;
-            } else {
-              logger.debug(tag, "attempt copy file via command failed: $result");
+            try {
+              var attempts = 0;
+              List<int> bytes = [];
+              const maxAttempts = 2;
+              while (attempts++ < maxAttempts && (bytes = await originFile.readAsBytes()).isEmpty) {
+                if (attempts < maxAttempts) {
+                  await Future.delayed(1000.ms);
+                }
+              }
+              if (bytes.isNotEmpty) {
+                await File(newPath).writeAsBytes(bytes);
+                HistoryDataListener.inst.onChanged(HistoryContentType.image, newPath, null);
+                break;
+              }
+            } catch (err, stack) {
+              logger.error(tag, "copy screenshot failed: $err", stack);
             }
+          }
+
+          //尝试提权复制
+          final result = await clipboardManager.executePrivilegedCommand("cp $path $newPath && echo 0");
+          if (result == "0") {
+            logger.debug(tag, "attempt copy file via command success");
+            HistoryDataListener.inst.onChanged(HistoryContentType.image, newPath, null);
+            break;
+          } else {
+            logger.debug(tag, "attempt copy file via command failed: $result");
           }
           await Future.delayed(2.s);
           retryCnt++;
@@ -461,6 +490,41 @@ fi''';
     final contentType = HistoryContentType.parse(type.name);
     logger.debug(tag, "onChange ${content.substring(0, min(content.length, 200))}");
     HistoryDataListener.inst.onChanged(contentType, content, source);
+  }
+
+  @override
+  void onForegroundChanged(bool isSelf) {
+    if (isSelf) {
+      return;
+    }
+    _closeHistoryPopupIfNeeded();
+  }
+
+  ///按桌面端点击外部规则决定是否关闭历史弹窗。
+  void _closeHistoryPopupIfNeeded() {
+    if (!PlatformExt.isDesktop) {
+      return;
+    }
+    if (!appConfig.autoClosePopupOnBlur) {
+      return;
+    }
+    // 置顶弹窗保持打开，直到用户显式关闭。
+    if (appConfig.historyPinned.value) {
+      return;
+    }
+    final historyWindow = appConfig.historyWindow;
+    if (historyWindow == null) {
+      return;
+    }
+    final multiWindowService = Get.find<MultiWindowChannelService>();
+    if (multiWindowService.isHideWindow(historyWindow.windowId)) {
+      return;
+    }
+    multiWindowService
+        .hideChildWindow(historyWindow.windowId, MultiWindowTag.history)
+        .catchError((err) {
+      logger.warn(tag, "hideChildWindow failed: $err");
+    });
   }
 
   @override
@@ -591,6 +655,7 @@ fi''';
   @override
   void onClose() {
     clipboardManager.removeListener(this);
+    _clickOutsideSubscription?.cancel();
     _detector.dispose();
     if (_klipperTextWatcher != null) {
       logger.info(tag, 'Stopping Klipper text watcher');

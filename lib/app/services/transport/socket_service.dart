@@ -21,6 +21,7 @@ import 'package:clipshare/app/handlers/socket/forward_socket_client.dart';
 import 'package:clipshare/app/handlers/socket/secure_socket_client.dart';
 import 'package:clipshare/app/handlers/socket/secure_socket_server.dart';
 import 'package:clipshare/app/handlers/sync/abstract_data_sender.dart';
+import 'package:clipshare/app/handlers/sync/ack_sync_sender.dart';
 import 'package:clipshare/app/handlers/sync/file_sync_handler.dart';
 import 'package:clipshare/app/handlers/sync/missing_data_sync_handler.dart';
 import 'package:clipshare/app/modules/rules_module/rules_controller.dart';
@@ -367,6 +368,7 @@ class SocketService extends GetxService with ScreenOpenedObserver, DataSender {
     devService.clearPairingSource(
       devId,
       session.socket.isForwardMode ? TransportProtocol.server : TransportProtocol.direct,
+      force: true,
     );
     _registry.removeDevice(devId);
     for (var listener in _devAliveListeners) {
@@ -882,7 +884,7 @@ class SocketService extends GetxService with ScreenOpenedObserver, DataSender {
         await sourceService.loadFuture;
         logger.debug(tag, "loadFuture completed");
         final appInfo = sourceService.getAppInfoByAppId(appId);
-        if(appInfo == null){
+        if (appInfo == null) {
           logger.debug(tag, "not found app info $appId");
           break;
         }
@@ -895,11 +897,11 @@ class SocketService extends GetxService with ScreenOpenedObserver, DataSender {
 
         final ruleController = Get.find<RulesController>();
         final notExists = ruleController.isNotExistAppInfo(appInfo.appId);
-        if(appInfo.id == 0){
+        if (appInfo.id == 0) {
           appInfo.id = appInfo.appId.hash64;
         }
         final success = await sourceService.addOrUpdate(appInfo);
-        if(success && notExists){
+        if (success && notExists) {
           ruleController.update();
         }
         break;
@@ -1030,14 +1032,42 @@ class SocketService extends GetxService with ScreenOpenedObserver, DataSender {
   void _onSyncMsg(MessageData msg) {
     Module module = Module.getValue(msg.data["module"]);
     logger.debug(tag, "module ${module.moduleName}");
+    final opId = _syncAckOpId(msg);
+    final isReceivedSync = msg.key == MsgType.sync || msg.key == MsgType.missingData;
+    final shouldAckReceivedSync = isReceivedSync && opId != null && module != Module.unknown;
+    if (isReceivedSync && !shouldAckReceivedSync) {
+      logger.warn(
+        tag,
+        "skip sync ack because message is not recognizable. "
+        "key=${msg.key.name}, data=${jsonEncode(msg.data)}",
+      );
+    }
     //筛选某个模块的同步处理器
     var lst = getListeners(module);
+    if (isReceivedSync) {
+      dbService.execSequentially(() async {
+        for (var listener in lst) {
+          try {
+            await listener.onSync(msg);
+          } catch (err, stack) {
+            logger.error(tag, err, stack);
+          }
+        }
+        if (shouldAckReceivedSync) {
+          await AckSyncSender.send(
+            msg.send,
+            opId,
+            {
+              "id": opId,
+              "module": module.moduleName,
+            },
+          );
+        }
+      });
+      return;
+    }
     for (var listener in lst) {
       switch (msg.key) {
-        case MsgType.sync:
-        case MsgType.missingData:
-          dbService.execSequentially(() => listener.onSync(msg));
-          break;
         case MsgType.ackSync:
           dbService.execSequentially(() => listener.ackSync(msg));
           break;
@@ -1045,6 +1075,18 @@ class SocketService extends GetxService with ScreenOpenedObserver, DataSender {
           break;
       }
     }
+  }
+
+  /// 读取同步消息的原始操作 id，只有能定位发送端 OperationRecord 时才允许公共层回 ACK。
+  int? _syncAckOpId(MessageData msg) {
+    final id = msg.data["id"];
+    if (id is int) {
+      return id;
+    }
+    if (id is String) {
+      return int.tryParse(id);
+    }
+    return null;
   }
 
   /// 当前是否正在执行发现流程，避免并发发现互相取消。
@@ -1188,8 +1230,7 @@ class SocketService extends GetxService with ScreenOpenedObserver, DataSender {
     if (!manual && appConfig.onlyManualDiscoverySubNet) {
       return tasks;
     }
-    final interfaces = (await NetworkUtil.listInterfaces())
-        .where((itf) => !appConfig.noDiscoveryIfs.contains(itf.name));
+    final interfaces = (await NetworkUtil.listInterfaces()).where((itf) => !appConfig.noDiscoveryIfs.contains(itf.name));
     final expendAddress = interfaces.map((itf) => itf.addresses).expand((address) => address);
     final ipv4Address = expendAddress.where((address) => address.type == InternetAddressType.IPv4);
     for (var address in ipv4Address) {
@@ -1259,7 +1300,7 @@ class SocketService extends GetxService with ScreenOpenedObserver, DataSender {
   }
 
   ///检查是否已经掉线，如果掉线则移除
-  Future<bool> testIsOnline(String devId, { bool autoReconnect = true }) async {
+  Future<bool> testIsOnline(String devId, {bool autoReconnect = true}) async {
     final session = _sessions.get(devId);
     if (session == null) {
       return false;
@@ -1393,6 +1434,7 @@ class SocketService extends GetxService with ScreenOpenedObserver, DataSender {
       }
     }
   }
+
   ///判断某个设备使用使用中转
   bool isUseForward(String guid) {
     final session = _sessions.get(guid);
@@ -1504,7 +1546,8 @@ class SocketService extends GetxService with ScreenOpenedObserver, DataSender {
       final protocol = (address?.isInternalIPv4 ?? false) ? TransportProtocol.direct : TransportProtocol.server;
       final dbDev = await dbService.deviceDao.getById(dev.guid, appConfig.userId);
       await devService.confirmPairingState(
-        device: dbDev ??
+        device:
+            dbDev ??
             Device(
               guid: dev.guid,
               devName: dev.name,
@@ -1557,13 +1600,14 @@ class SocketService extends GetxService with ScreenOpenedObserver, DataSender {
     if (updatePairingState) {
       final dbDev = await dbService.deviceDao.getById(dev.guid, appConfig.userId);
       await devService.confirmPairingState(
-        device: dbDev ??
+        device:
+            dbDev ??
             Device(
               guid: dev.guid,
               devName: dev.name,
               uid: uid,
               type: dev.type,
-        ),
+            ),
         localIsPaired: false,
         remoteIsPaired: false,
         protocol: session?.socket.isForwardMode ?? false ? TransportProtocol.server : TransportProtocol.direct,
@@ -1720,6 +1764,15 @@ class SocketService extends GetxService with ScreenOpenedObserver, DataSender {
       if (token.isCanceled || _disposed) {
         return;
       }
+      // 已被存储中转接管时直接退出重连循环，避免继续空转重试。
+      final protocol = _registry.getProtocol(guid);
+      if (protocol != null && !protocol.isSocket) {
+        logger.debug(
+          tag,
+          "Reconnect loop exits because device is taken over by storage. device=${dev.name}",
+        );
+        return;
+      }
       attempted = true;
       if (await testIsOnline(guid, autoReconnect: false)) {
         final devSkt = _sessions.get(guid);
@@ -1789,6 +1842,11 @@ class SocketService extends GetxService with ScreenOpenedObserver, DataSender {
     _reconnectTasks.remove(guid);
   }
 
+  /// 对外取消同设备重连循环，供存储中转接管等场景调用。
+  void cancelReconnect(String guid) {
+    _cancelReconnect(guid);
+  }
+
   /// 合并本次请求令牌和外部取消令牌，任一令牌取消都让候选连接失效。
   CancelToken _combineCancelTokens(CancelToken localToken, CancelToken? externalToken) {
     if (externalToken == null) {
@@ -1849,6 +1907,7 @@ class SocketService extends GetxService with ScreenOpenedObserver, DataSender {
       }
     }
   }
+
   /// 发送组播消息
   void sendMulticastMsg(
     MsgType key,
@@ -1883,9 +1942,7 @@ class SocketService extends GetxService with ScreenOpenedObserver, DataSender {
     int port = 0,
   ]) async {
     const ipv4Type = InternetAddressType.IPv4;
-    final interfaces = (await NetworkUtil.listInterfaces())
-        .where((itf) => !appConfig.noDiscoveryIfs.contains(itf.name))
-        .where((itf) => itf.addresses.any((addr) => addr.type == ipv4Type));
+    final interfaces = (await NetworkUtil.listInterfaces()).where((itf) => !appConfig.noDiscoveryIfs.contains(itf.name)).where((itf) => itf.addresses.any((addr) => addr.type == ipv4Type));
 
     final sockets = <RawDatagramSocket>[];
 

@@ -10,6 +10,7 @@ import 'package:clipshare/app/utils/constants.dart';
 import 'package:clipshare/app/utils/extensions/file_extension.dart';
 import 'package:clipshare/app/utils/extensions/number_extension.dart';
 import 'package:clipshare/app/utils/extensions/platform_extension.dart';
+import 'package:clipshare/app/utils/extensions/string_extension.dart';
 import 'package:clipshare/app/utils/global.dart';
 import 'package:clipshare/app/utils/log.dart';
 import 'package:clipshare/app/utils/permission_helper.dart';
@@ -300,7 +301,7 @@ class _PreviewPageState extends State<PreviewPage> {
                                       transformationController: _controller,
                                       child: renderImageItem(idx, ct),
                                     ),
-                                    onTap: (){
+                                    onTap: () {
                                       setState(() {
                                         _showInfo = !_showInfo;
                                       });
@@ -417,23 +418,34 @@ class _PreviewPageState extends State<PreviewPage> {
 
   ///右键菜单
   void showMenu(String imgPath, Offset? position) {
+    final isAndroidDataPath = imgPath.startsWith(Constants.androidDataPath);
+    final isIOS = Platform.isIOS;
+    final save2Pictures = appConfig!.saveToPictures;
     final menu = ContextMenu(
       entries: [
-        if ((Platform.isAndroid && imgPath.startsWith(Constants.androidDataPath) && !appConfig!.saveToPictures || (Platform.isIOS && !appConfig!.saveToPictures) ))
+        if (isAndroidDataPath || (isIOS && !save2Pictures))
           MenuItem(
             label: TranslationKey.saveToAlbum.tr,
             icon: Icons.save_alt,
             onSelected: () async {
-              if(Platform.isAndroid){
+              if (Platform.isAndroid) {
                 //如果没有权限则请求
                 if (!(await PermissionHelper.testAndroidStoragePerm())) {
                   await PermissionHelper.reqAndroidStoragePerm();
                 }
-                final file = File(imgPath);
-                final fileName = file.fileName;
-                final newPath = "${Constants.androidPicturesPath}/${Constants.appName}/$fileName";
+                final originFile = File(imgPath);
+                final fileName = originFile.fileName;
+                // 根据配置决定新路径
+                String newPath = "${appConfig!.imageStorePath}/$fileName".normalizePath;
+                if(newPath.startsWith(Constants.androidDataPath) || newPath==originFile.normalizePath || save2Pictures){
+                  //私有目录 或 等于原始路径 或 保存到相册
+                  newPath = "${Constants.androidPicturesPath}/${Constants.appName}/$fileName".normalizePath;
+                }
                 try {
                   await File(newPath).parent.create(recursive: true);
+                  // 先读入内存再写入，避免 File.copy 自复制时先删目标文件导致 0B
+                  final bytes = await originFile.readAsBytes();
+                  await File(newPath).writeAsBytes(bytes);
                   Global.showSnackBarSuc(text: TranslationKey.saveSuccess.tr, context: context);
                   final androidChannelService = Get.find<AndroidChannelService>();
                   androidChannelService.notifyMediaScan(newPath);
@@ -442,8 +454,8 @@ class _PreviewPageState extends State<PreviewPage> {
                   Global.showSnackBarWarn(text: TranslationKey.saveFailed.tr, context: context);
                 }
               } else {
-                if(await PermissionHelper.checkIOSPhotoPermission()){
-                  if(!await PermissionHelper.reqIOSPhotoPermission()){
+                if (await PermissionHelper.checkIOSPhotoPermission()) {
+                  if (!await PermissionHelper.reqIOSPhotoPermission()) {
                     Global.showTipsDialog(context: Get.context!, text: TranslationKey.noPhotoPermission.tr);
                     return;
                   }
@@ -452,11 +464,10 @@ class _PreviewPageState extends State<PreviewPage> {
                   final imageSaver = ImageGallerySaver();
                   await imageSaver.saveImage(bytes);
                   Global.showSnackBarSuc(text: TranslationKey.saveSuccess.tr, context: context);
-                }else{
+                } else {
                   Global.showTipsDialog(context: Get.context!, text: TranslationKey.noPhotoPermission.tr);
                 }
               }
-
             },
           ),
         if (PlatformExt.isDesktop)

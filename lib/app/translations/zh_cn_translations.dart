@@ -680,7 +680,7 @@ class ZhCNTranslation extends AbstractTranslations {
         return "版本不兼容";
       case TranslationKey.notCompatibleDialogText:
         return "与该设备的软件版本不兼容，设备连接和数据同步功能可能异常。"
-            "\n最低版本要求为 @minName(@minCode})"
+            "\n最低版本要求为 @minName(@minCode)"
             "\n当前软件版本为 @selfName(@selfCode)";
       case TranslationKey.emptyData:
         return "无数据";
@@ -1009,6 +1009,12 @@ class ZhCNTranslation extends AbstractTranslations {
         return "使用相同快捷键关闭弹窗";
       case TranslationKey.closeOnSameHotKeyDesc:
         return "默认鼠标点击窗体关闭按钮，启用后可以使用相同的快捷键打开和关闭弹窗";
+      case TranslationKey.clickToPasteTitle:
+        return "历史弹窗粘贴触发行为";
+      case TranslationKey.clickToPasteDescSingle:
+        return "当前:单击粘贴";
+      case TranslationKey.clickToPasteDescDouble:
+        return "当前:双击粘贴";
       case TranslationKey.saveToAlbum:
         return "保存至相册";
       case TranslationKey.openWithOtherApplications:
@@ -1782,9 +1788,11 @@ class ZhCNTranslation extends AbstractTranslations {
       case TranslationKey.ruleDetailModeWhitelist:
         return '白名单';
       case TranslationKey.ruleDetailRegexLabel:
-        return '规则：';
+        return '识别规则：';
+      case TranslationKey.ruleDetailRegexTip:
+        return '正则默认忽略大小写，提取规则只提取匹配到的第一个内容';
       case TranslationKey.ruleDetailExtractContent:
-        return '提取内容';
+        return '提取规则：';
       case TranslationKey.ruleDetailModeLabel:
         return '规则模式';
       case TranslationKey.ruleDetailActionLabel:
@@ -1940,6 +1948,17 @@ class ZhCNTranslation extends AbstractTranslations {
         return "通知服务版本不兼容";
       case TranslationKey.storageWsVersionIncompatibleDialogContent:
         return "当前通知服务版本为 @version，最低需要 @minVersion，请升级通知服务后再使用存储同步。";
+
+      case TranslationKey.noTargetWindow:
+        return '粘贴失败，没有找到可接收此次粘贴操作的目标窗口';
+      case TranslationKey.openTargetProcessFailed:
+        return '粘贴失败，无法打开目标进程以进行检查';
+      case TranslationKey.inspectTargetFailed:
+        return '粘贴失败，无法读取目标进程的完整性级别，可能需要提升权限';
+      case TranslationKey.inspectSelfFailed:
+        return '粘贴失败，无法读取当前进程的完整性级别';
+      case TranslationKey.targetIntegrityHigher:
+        return '粘贴失败，可能需要提升权限';
     }
   }
 }

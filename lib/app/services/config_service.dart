@@ -68,7 +68,6 @@ import 'package:path/path.dart' as p;
 final _noScreenshot = NoScreenshot.instance;
 
 class ConfigService extends GetxService {
-
   ConfigDao get configDao => Get.find<DbService>().configDao;
 
   RuleDao get ruleDao => Get.find<DbService>().ruleDao;
@@ -126,6 +125,9 @@ class ConfigService extends GetxService {
   //region 响应式
 
   //region 应用内配置
+
+  //历史弹窗置顶状态
+  final historyPinned = false.obs;
 
   //规则是否已迁移
   bool _rulesMigrated = false;
@@ -308,6 +310,11 @@ class ConfigService extends GetxService {
   final RxBool _closeOnSameHotKey = false.obs;
 
   bool get closeOnSameHotKey => _closeOnSameHotKey.value;
+
+  //桌面端历史弹窗粘贴触发行为，默认撞击
+  final RxBool _clickToPaste = false.obs;
+
+  bool get clickToPaste => _clickToPaste.value;
 
   //桌面端弹窗失去焦点时自动关闭
   final RxBool _autoClosePopupOnBlur = false.obs;
@@ -662,7 +669,13 @@ class ConfigService extends GetxService {
   ///加载配置信息
   Future<void> loadConfigs() async {
     var cfg = configDao;
-    _port = (await cfg.getConfigByKey(ConfigKey.port, Constants.port)).obs;
+    final int defaultPort;
+    if (kDebugMode) {
+      defaultPort = Constants.port - 1;
+    } else {
+      defaultPort = Constants.port;
+    }
+    _port = (await cfg.getConfigByKey(ConfigKey.port, defaultPort)).obs;
     _localName = (await cfg.getConfigByKey(ConfigKey.localName, '')).obs;
     _startMini = (await cfg.getConfigByKey(ConfigKey.startMini, false)).obs;
     _allowDiscover = (await cfg.getConfigByKey(ConfigKey.allowDiscover, true)).obs;
@@ -795,6 +808,7 @@ class ConfigService extends GetxService {
       convert: ClipboardListeningWay.parse,
     );
     _closeOnSameHotKey.value = (await cfg.getConfigByKey(ConfigKey.closeOnSameHotKey, false));
+    _clickToPaste.value = (await cfg.getConfigByKey(ConfigKey.clickToPaste, false));
     _enableAutoSyncOnScreenOpened.value = (await cfg.getConfigByKey(ConfigKey.enableAutoSyncOnScreenOpened, true));
     _sourceRecord.value = (await cfg.getConfigByKey(ConfigKey.sourceRecord, PlatformExt.isDesktop));
     _sourceRecordViaDumpsys.value = (await cfg.getConfigByKey(ConfigKey.sourceRecordViaDumpsys, false));
@@ -911,14 +925,17 @@ class ConfigService extends GetxService {
     final execDirPath = File(Platform.resolvedExecutable).parent.absolute.path;
     if (Platform.isMacOS) {
       luaLibDirPath = p.join(
-          execDirPath,           // .../Contents/MacOS
-          '..',                  // 回到 Contents/
-          'Frameworks',
-          'App.framework',
-          'Resources',           // Contents/Frameworks/App.framework/Resources
-          'flutter_assets',
-          'assets',
-          'lua'
+        execDirPath,
+        // .../Contents/MacOS
+        '..',
+        // 回到 Contents/
+        'Frameworks',
+        'App.framework',
+        'Resources',
+        // Contents/Frameworks/App.framework/Resources
+        'flutter_assets',
+        'assets',
+        'lua',
       );
     } else if (Platform.isIOS) {
       luaLibDirPath = p.join(execDirPath, "Frameworks", "App.framework", "flutter_assets", "assets", "lua");
@@ -984,17 +1001,17 @@ class ConfigService extends GetxService {
       databasePath = envDatabasePath;
     }
     if (fileStorePath != null) {
-      try{
+      try {
         await Directory(fileStorePath).create(recursive: true);
-      }catch(err, stack){
+      } catch (err, stack) {
         fileStorePath = null;
         logger.error(tag, err, stack);
       }
     }
     if (databasePath != null) {
-      try{
+      try {
         await Directory(databasePath).create(recursive: true);
-      }catch(err, stack){
+      } catch (err, stack) {
         databasePath = null;
         logger.error(tag, err, stack);
       }
@@ -1004,7 +1021,7 @@ class ConfigService extends GetxService {
 
   ///文件默认存储路径
   Future<void> _initFileStorePath(AppPathConfig custom) async {
-    if(custom.fileStorePath != null){
+    if (custom.fileStorePath != null) {
       defaultFileStorePath = custom.fileStorePath!;
       return;
     }
@@ -1035,7 +1052,7 @@ class ConfigService extends GetxService {
 
   ///数据库路径
   Future<void> _initDatabasePath(AppPathConfig custom) async {
-    if(custom.databasePath != null){
+    if (custom.databasePath != null) {
       databasePath = custom.databasePath!;
       return;
     }
@@ -1444,7 +1461,8 @@ class ConfigService extends GetxService {
       }
     });
     final windowChannelService = Get.find<MultiWindowChannelService>();
-    windowChannelService.updateConfig(MultiWindowConfig.themeMode, themeMode.name);
+    //updateConfig 是异步 IPC，窗口引用陈旧时 reject，需 catchError 兜住（Bug1 同款）
+    windowChannelService.updateConfig(MultiWindowConfig.themeMode, themeMode.name).catchError((_) {});
   }
 
   Future<void> setIgnoreUpdateVersion(String versionCode) async {
@@ -1485,6 +1503,17 @@ class ConfigService extends GetxService {
   Future<void> setCloseOnSameHotKey(bool closeOnSameHotKey) async {
     await configDao.addOrUpdate(ConfigKey.closeOnSameHotKey, closeOnSameHotKey.toString());
     _closeOnSameHotKey.value = closeOnSameHotKey;
+  }
+
+  Future<void> setClickToPaste(bool clickToPaste) async {
+    await configDao.addOrUpdate(ConfigKey.clickToPaste, clickToPaste.toString());
+    _clickToPaste.value = clickToPaste;
+    // 推送到弹窗（弹窗常驻不销毁，走 updateConfig 通道实时生效，无需重启/重新打开）。
+    // updateConfig 是异步 IPC，窗口引用陈旧时会 reject，必须 catchError 兜住
+    // （否则 unhandled async error，与 Bug1 同款）。
+    Get.find<MultiWindowChannelService>()
+        .updateConfig(MultiWindowConfig.clickToPaste, clickToPaste)
+        .catchError((_) {});
   }
 
   Future<void> setEnableAutoSyncOnScreenOpened(bool enable) async {
@@ -1683,7 +1712,8 @@ class ConfigService extends GetxService {
     await configDao.addOrUpdate(ConfigKey.autoClosePopupOnBlur, value.toString());
     _autoClosePopupOnBlur.value = value;
     final windowChannelService = Get.find<MultiWindowChannelService>();
-    await windowChannelService.updateConfig(MultiWindowConfig.autoClosePopupOnBlur, value);
+    //updateConfig 是异步 IPC，窗口引用陈旧时 reject，需 catchError 兜住（Bug1 同款）
+    await windowChannelService.updateConfig(MultiWindowConfig.autoClosePopupOnBlur, value).catchError((_) {});
   }
 
   ///更新弹窗大小
@@ -1815,7 +1845,7 @@ class ConfigService extends GetxService {
           final isDefaultTag = name == TranslationKey.defaultLinkTagName.tr;
           rules.add(
             Rule(
-              id: isDefaultTag ? 2061101839524896768 :snowflake.nextId(),
+              id: isDefaultTag ? 2061101839524896768 : snowflake.nextId(),
               name: name,
               platforms: allPlatforms,
               trigger: RuleTrigger.onCopy.name,
@@ -2051,10 +2081,11 @@ class ConfigService extends GetxService {
     final locale = language.resolveLocale(Get.deviceLocale);
     Get.updateLocale(locale);
     final windowChannelService = Get.find<MultiWindowChannelService>();
+    //updateConfig 是异步 IPC，窗口引用陈旧时 reject，需 catchError 兜住（Bug1 同款）
     windowChannelService.updateConfig(MultiWindowConfig.language, {
-      'languageCode':locale.languageCode,
-      'countryCode':locale.countryCode,
-    });
+      'languageCode': locale.languageCode,
+      'countryCode': locale.countryCode,
+    }).catchError((_) {});
   }
 
   //endregion
