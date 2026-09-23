@@ -278,3 +278,10 @@ flutter:
     - path: assets/videos/pip_example.mp4
       platforms:
         - ios
+
+# Use the SQLite implementation bundled by sqlite3_flutter_libs on desktop.
+# This avoids symbol collisions between the bundled and system SQLite libraries.
+hooks:
+  user_defines:
+    sqlite3:
+      source: process

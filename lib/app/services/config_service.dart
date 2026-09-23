@@ -1031,9 +1031,11 @@ class ConfigService extends GetxService {
     } else if (Platform.isMacOS && kReleaseMode) {
       var dir = await getApplicationDocumentsDirectory();
       path = dir.path + "/${Constants.appName}/files".normalizePath;
+    } else if (Platform.isLinux) {
+      path = "$documentsPath/files".normalizePath;
     } else {
       path = "${Directory(Platform.resolvedExecutable).parent.path}/files";
-      //如果当前路径可写则使用当前路径，如开发环境或者便携版本
+      //如果当前路径不可写则回退到文档目录，如开发环境或者便携版本
       if (!FileUtil.testWriteable(path)) {
         final documentPath = documentsPath;
         path = "$documentPath/files".normalizePath;
@@ -1058,7 +1060,7 @@ class ConfigService extends GetxService {
     }
     //桌面端如果当前路径可写则使用当前路径，如开发环境或者便携版本
     if (PlatformExt.isDesktop) {
-      if (Platform.isMacOS) {
+      if (Platform.isLinux || Platform.isMacOS) {
         databasePath = documentsPath;
       } else {
         var dirPath = Directory(Platform.resolvedExecutable).parent.path;

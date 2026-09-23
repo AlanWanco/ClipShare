@@ -2,7 +2,6 @@ import 'dart:io';
 
 import 'package:clipshare/app/utils/extensions/string_extension.dart';
 import 'package:crypto/crypto.dart' as crypto;
-import 'package:desktop_drop/desktop_drop.dart';
 import 'package:open_file_plus/open_file_plus.dart';
 import 'package:clipshare/app/utils/permission_handler_facade.dart';
 import 'package:resolve_windows_shortcut/resolve_windows_shortcut.dart';
@@ -150,8 +149,4 @@ extension FileExt on File {
       await OpenFile.open(parent.path);
     }
   }
-}
-
-extension DropItemExt on DropItem {
-  bool get isUri => mimeType == "uri";
 }

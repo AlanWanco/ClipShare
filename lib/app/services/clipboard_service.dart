@@ -40,6 +40,8 @@ class ClipboardService extends GetxService with ClipboardListener {
   var _detector = FlutterScreenshotDetect();
   Process? _klipperTextWatcher;
   Process? _waylandImageWatcher;
+  int _klipperTextsToIgnore = 0;
+  int _waylandImagesToIgnore = 0;
   Future<void> _klipperReadChain = Future.value();
   final _isExcludeFormat = true.obs;
   var _pausedScreenshot = false;
@@ -51,6 +53,22 @@ class ClipboardService extends GetxService with ClipboardListener {
   static const _shizukuDisconnectedNotifyMinInterval = Duration(seconds: 10);
 
   bool get isExcludeFormat => _isExcludeFormat.value;
+
+  void ignoreNextClipboardContent(ClipboardContentType type) {
+    if (type == ClipboardContentType.text && _klipperTextWatcher != null) {
+      _klipperTextsToIgnore++;
+    } else if (type == ClipboardContentType.image && _waylandImageWatcher != null) {
+      _waylandImagesToIgnore++;
+    }
+  }
+
+  void cancelIgnoreNextClipboardContent(ClipboardContentType type) {
+    if (type == ClipboardContentType.text && _klipperTextsToIgnore > 0) {
+      _klipperTextsToIgnore--;
+    } else if (type == ClipboardContentType.image && _waylandImagesToIgnore > 0) {
+      _waylandImagesToIgnore--;
+    }
+  }
 
   static NotificationContentConfig get defaultNotificationContentConfig => NotificationContentConfig(
     errorTitle: TranslationKey.defaultClipboardServerNotificationCfgErrorTitle.tr,
@@ -191,6 +209,11 @@ class ClipboardService extends GetxService with ClipboardListener {
         return;
       }
       logger.debug(tag, 'Klipper text captured: ${text.substring(0, min(text.length, 120))}');
+      if (_klipperTextsToIgnore > 0) {
+        _klipperTextsToIgnore--;
+        logger.debug(tag, 'Ignored Klipper text copied by ClipShare');
+        return;
+      }
       HistoryDataListener.inst.onChanged(HistoryContentType.text, text, null);
     } catch (err, stack) {
       logger.error(tag, 'read Klipper text failed: $err', stack);
@@ -198,21 +221,29 @@ class ClipboardService extends GetxService with ClipboardListener {
   }
 
   String? _parseKlipperText(String output) {
-    if (!output.startsWith('("') || !output.endsWith('",)')) {
+    final usesDoubleQuotes =
+        output.startsWith('("') && output.endsWith('",)');
+    final usesSingleQuotes =
+        output.startsWith("('") && output.endsWith("',)");
+    if (!usesDoubleQuotes && !usesSingleQuotes) {
       return null;
     }
     final escaped = output.substring(2, output.length - 3);
-    try {
-      return jsonDecode('"$escaped"') as String;
-    } catch (_) {
-      return escaped
-          .replaceAll(r'\\', '\\u0000')
-          .replaceAll(r'\n', '\n')
-          .replaceAll(r'\t', '\t')
-          .replaceAll(r'\r', '\r')
-          .replaceAll(r'\"', '"')
-          .replaceAll('\\u0000', '\\');
+    if (usesDoubleQuotes) {
+      try {
+        return jsonDecode('"$escaped"') as String;
+      } catch (_) {
+        // Keep the GVariant-style unescaping below as a fallback.
+      }
     }
+    return escaped
+        .replaceAll(r'\\', '\\u0000')
+        .replaceAll(r'\n', '\n')
+        .replaceAll(r'\t', '\t')
+        .replaceAll(r'\r', '\r')
+        .replaceAll(r"\'", "'")
+        .replaceAll(r'\"', '"')
+        .replaceAll('\\u0000', '\\');
   }
 
   Future<void> _startWaylandImageWatcher() async {
@@ -221,18 +252,15 @@ class ClipboardService extends GetxService with ClipboardListener {
       return;
     }
     try {
-      final script = r'''types=$(wl-paste --list-types 2>/dev/null)
-case "$types" in
-  *image/png*) ;;
-  *) exit 0 ;;
-esac
-tmp=$(mktemp "$1/wl-clip-XXXXXX.png") || exit 1
-if wl-paste --type image/png > "$tmp" 2>/dev/null && [ -s "$tmp" ]; then
+      final script = r'''tmp=$(mktemp "$1/wl-clip-XXXXXX.png") || exit 1
+if cat > "$tmp" && [ -s "$tmp" ]; then
   printf '%s\n' "$tmp"
 else
   rm -f "$tmp"
 fi''';
       final process = await Process.start('wl-paste', [
+        '--type',
+        'image/png',
         '--watch',
         'sh',
         '-c',
@@ -257,6 +285,16 @@ fi''';
                 return;
               }
               logger.debug(tag, 'Wayland image captured: $path');
+              if (_waylandImagesToIgnore > 0) {
+                _waylandImagesToIgnore--;
+                try {
+                  file.deleteSync();
+                  logger.debug(tag, 'Ignored Wayland image copied by ClipShare: $path');
+                } catch (err, stack) {
+                  logger.warn(tag, 'Delete ignored Wayland image failed: $err, $stack');
+                }
+                return;
+              }
               HistoryDataListener.inst.onChanged(
                 HistoryContentType.image,
                 path,

@@ -1,4 +1,5 @@
-﻿import 'dart:io';
+﻿import 'dart:convert';
+import 'dart:io';
 
 import 'package:clipshare/app/data/enums/translation_key.dart';
 import 'package:clipshare/app/data/repository/entity/tables/history.dart';
@@ -7,10 +8,90 @@ import 'package:clipshare/app/utils/extensions/platform_extension.dart';
 import 'package:clipshare/app/utils/extensions/string_extension.dart';
 import 'package:clipshare/app/utils/global.dart';
 import 'package:clipshare/app/utils/log.dart';
+import 'package:clipshare/app/services/clipboard_service.dart';
 import 'package:clipshare_clipboard_listener/clipboard_manager.dart';
 import 'package:clipshare_clipboard_listener/enums.dart';
 import 'package:flutter/cupertino.dart';
+import 'package:get/get.dart';
 import 'package:super_clipboard/super_clipboard.dart';
+
+const _waylandClipboardTag = "HistoryDataExtension";
+
+bool _isWaylandSession() {
+  final environment = Platform.environment;
+  return Platform.isLinux &&
+      (environment['XDG_SESSION_TYPE'] == 'wayland' ||
+          environment['WAYLAND_DISPLAY']?.isNotEmpty == true);
+}
+
+String _waylandImageMimeType(String path) {
+  final extension = path.toLowerCase().split('.').last;
+  switch (extension) {
+    case 'jpg':
+    case 'jpeg':
+      return 'image/jpeg';
+    case 'webp':
+      return 'image/webp';
+    case 'gif':
+      return 'image/gif';
+    case 'bmp':
+      return 'image/bmp';
+    case 'tif':
+    case 'tiff':
+      return 'image/tiff';
+    default:
+      return 'image/png';
+  }
+}
+
+Future<bool> _copyToWaylandClipboard(
+  ClipboardContentType type,
+  String content,
+) async {
+  if (type == ClipboardContentType.image && !await File(content).exists()) {
+    logger.warn(_waylandClipboardTag, "copy image failed: $content, file not exists");
+    return false;
+  }
+
+  final mimeType = type == ClipboardContentType.image
+      ? _waylandImageMimeType(content)
+      : 'text/plain';
+  Process? process;
+  ClipboardService? clipboardService;
+  var ignoreMarked = false;
+  try {
+    if (Get.isRegistered<ClipboardService>()) {
+      clipboardService = Get.find<ClipboardService>();
+      clipboardService.ignoreNextClipboardContent(type);
+      ignoreMarked = true;
+    }
+    process = await Process.start('/usr/bin/wl-copy', [
+      '--type',
+      mimeType,
+    ]);
+    if (type == ClipboardContentType.image) {
+      await process.stdin.addStream(File(content).openRead());
+    } else {
+      process.stdin.add(utf8.encode(content));
+    }
+    await process.stdin.close();
+    final exitCode = await process.exitCode;
+    if (exitCode != 0) {
+      if (ignoreMarked) {
+        clipboardService!.cancelIgnoreNextClipboardContent(type);
+      }
+      logger.warn(_waylandClipboardTag, "wl-copy exited with code $exitCode");
+    }
+    return exitCode == 0;
+  } catch (err, stack) {
+    process?.kill();
+    if (ignoreMarked) {
+      clipboardService!.cancelIgnoreNextClipboardContent(type);
+    }
+    logger.error(_waylandClipboardTag, "copy to Wayland clipboard failed: $err", stack);
+    return false;
+  }
+}
 
 extension HistoryDataExtension on History {
   static const String tag = "HistoryDataExtension";
@@ -81,6 +162,8 @@ extension HistoryDataExtension on History {
           copyResult = false;
         }
       }
+    } else if (_isWaylandSession()) {
+      copyResult = await _copyToWaylandClipboard(type, content);
     } else {
       copyResult = await clipboardManager.copy(type, content);
     }
