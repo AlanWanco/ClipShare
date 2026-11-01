@@ -279,9 +279,8 @@ flutter:
       platforms:
         - ios
 
-# Use the SQLite implementation bundled by sqlite3_flutter_libs on desktop.
-# This avoids symbol collisions between the bundled and system SQLite libraries.
-hooks:
-  user_defines:
-    sqlite3:
-      source: process
+dependency_overrides:
+  clipshare_clipboard_listener:
+    git:
+      url: https://github.com/AlanWanco/ClipboardListener.git
+      ref: fix/windows-dib-pixel-offset
