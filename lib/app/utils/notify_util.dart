@@ -124,6 +124,18 @@ class NotifyUtil {
     return false;
   }
 
+  /// Linux 通知的 app icon 可用图片文件路径呈现缩略预览。
+  static LinuxNotificationIcon? _linuxNotificationIcon(Uri? imageUri) {
+    if (imageUri == null || !imageUri.isScheme('file')) return null;
+    try {
+      final imageFile = File.fromUri(imageUri).absolute;
+      if (!imageFile.existsSync()) return null;
+      return FilePathLinuxIcon(imageFile.path);
+    } catch (_) {
+      return null;
+    }
+  }
+
   /// Windows Toast 使用 AUMID 作为应用身份，开发版独立注册以避免污染正式安装版图标。
   static String get _windowsAppUserModelId => kReleaseMode
       ? Constants.windowsAppUserModelId
@@ -180,7 +192,9 @@ class NotifyUtil {
           if(notificationLogoUri != null)
             DarwinNotificationAttachment(File.fromUri(notificationLogoUri).path)
         ]),
-        linux: const LinuxNotificationDetails(),
+        linux: LinuxNotificationDetails(
+          icon: _linuxNotificationIcon(notificationLogoUri),
+        ),
         windows: WindowsNotificationDetails(
           images: [
             WindowsImage(

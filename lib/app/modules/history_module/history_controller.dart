@@ -603,8 +603,90 @@ class HistoryController extends GetxController with WidgetsBindingObserver imple
     });
   }
 
+  bool _shouldCopyImageDuringSync(
+    History history,
+    OpMethod method,
+    bool loadingMissingData,
+  ) {
+    return method == OpMethod.add &&
+        appConfig.autoCopyImageAfterSync &&
+        (!loadingMissingData || _missingDataCopyMsg == history.id) &&
+        history.canCopy &&
+        history.getCopyType() == ClipboardContentType.image;
+  }
+
+  Future<void> _notifyReceivedClipboardIfNeeded({
+    required History history,
+    required OpMethod method,
+    required bool loadingMissingData,
+    required String senderId,
+    required String fallbackSenderName,
+  }) async {
+    if (!appConfig.notifyOnReceivedClipboard ||
+        method != OpMethod.add ||
+        loadingMissingData) {
+      return;
+    }
+    final contentType = ClipboardContentType.parse(history.type);
+    if (contentType != ClipboardContentType.text &&
+        contentType != ClipboardContentType.image) {
+      return;
+    }
+
+    final originId = history.devId.isNotEmpty ? history.devId : senderId;
+    if (originId.isEmpty || originId == appConfig.device.guid) return;
+
+    final origin = devService.getById(originId);
+    final configuredName = origin.guid.isNotEmpty
+        ? origin.displayName
+        : fallbackSenderName.trim();
+    final deviceName = configuredName.isEmpty
+        ? TranslationKey.unknown.tr
+        : configuredName;
+    final isImage = contentType == ClipboardContentType.image;
+    final notificationContent = isImage
+        ? TranslationKey.image.tr
+        : _clipboardTextPreview(history.content);
+    final imageFile = File(history.content);
+    final notificationLogoUri = isImage && imageFile.existsSync()
+        ? Uri.file(imageFile.absolute.path)
+        : null;
+    final notificationKey = 'received-clipboard-$originId';
+
+    try {
+      NotifyUtil.cancelAll(notificationKey);
+      await NotifyUtil.notify(
+        title: TranslationKey.receivedClipboardNotificationTitle.trParams({
+          'devName': deviceName,
+        }),
+        content: notificationContent,
+        key: notificationKey,
+        notificationLogoUri: notificationLogoUri,
+      );
+    } catch (err, stack) {
+      logger.warn(tag, 'notify received clipboard failed: $err, $stack');
+    }
+  }
+
   ///处理同步记录中的二进制内容
-  Future<void> _processData(History history, dynamic historyContent, OpMethod method, DevInfo sender) async {
+  String _clipboardTextPreview(String content) {
+    final codePoints = content.runes.take(51).toList(growable: false);
+    if (codePoints.isEmpty) return TranslationKey.text.tr;
+    final preview = String.fromCharCodes(codePoints.take(50))
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+    if (preview.isEmpty) return TranslationKey.text.tr;
+    return codePoints.length > 50 ? '$preview…' : preview;
+  }
+
+  Future<PendingWaylandImageClipboardCopy?> _processData(
+    History history,
+    dynamic historyContent,
+    OpMethod method,
+    DevInfo sender, {
+    bool copyImageToClipboard = false,
+  }) async {
+    PendingWaylandImageClipboardCopy? pendingClipboardCopy;
     if ([OpMethod.add, OpMethod.update].contains(method)) {
       switch (HistoryContentType.parse(history.type)) {
         case HistoryContentType.image:
@@ -636,7 +718,24 @@ class HistoryController extends GetxController with WidgetsBindingObserver imple
           var file = File(path);
           await file.parent.create(recursive: true);
           if (!file.existsSync()) {
-            file.writeAsBytesSync(data);
+            final fileWrite = file.writeAsBytes(data);
+            if (copyImageToClipboard) {
+              pendingClipboardCopy = await beginWaylandImageClipboardCopy(
+                path,
+                data,
+              );
+            }
+            try {
+              await fileWrite;
+              if (pendingClipboardCopy != null &&
+                  !await pendingClipboardCopy.waitForInput()) {
+                await pendingClipboardCopy.cancel();
+                pendingClipboardCopy = null;
+              }
+            } catch (_) {
+              await pendingClipboardCopy?.cancel();
+              rethrow;
+            }
             if (appConfig.saveToPictures) {
               androidChannelService.notifyMediaScan(path);
             }
@@ -691,6 +790,7 @@ class HistoryController extends GetxController with WidgetsBindingObserver imple
           break;
       }
     }
+    return pendingClipboardCopy;
   }
 
   Future<AppInfo?> _getNotificationAppInfo(History history, String? pkgName, DevInfo sender) async {
@@ -723,7 +823,13 @@ class HistoryController extends GetxController with WidgetsBindingObserver imple
     return null;
   }
 
-  Future<int> _process2Db(History history, OpMethod method, bool loadingMissingData, bool notify) async {
+  Future<int> _process2Db(
+    History history,
+    OpMethod method,
+    bool loadingMissingData,
+    bool notify, {
+    PendingWaylandImageClipboardCopy? pendingImageClipboardCopy,
+  }) async {
     var cnt = 0;
     final type = ClipboardContentType.parse(history.type);
     switch (method) {
@@ -742,8 +848,18 @@ class HistoryController extends GetxController with WidgetsBindingObserver imple
           }
 
           var copy = false;
-          if (type != ClipboardContentType.image || appConfig.autoCopyImageAfterSync) {
-            history.copyContent();
+          if (type != ClipboardContentType.image ||
+              appConfig.autoCopyImageAfterSync) {
+            if (type == ClipboardContentType.image &&
+                pendingImageClipboardCopy != null) {
+              unawaited(
+                pendingImageClipboardCopy.commit().then((copied) {
+                  if (!copied) unawaited(history.copyContent());
+                }),
+              );
+            } else {
+              history.copyContent();
+            }
             copy = true;
           }
           if (_screenUnlocked == false && copy) {
@@ -797,12 +913,40 @@ class HistoryController extends GetxController with WidgetsBindingObserver imple
       return _updateHistoryTop(history);
     }
 
-    await _processData(history, historyContent, opRecord.method, msg.send);
-    final cnt = await _process2Db(history, opRecord.method, msg.key == MsgType.missingData, true);
-    if (cnt <= 0) return;
-    notifyHistoryWindow();
-    //将同步过来的数据添加到本地操作记录
-    dbService.opRecordDao.add(opRecord.copyWith(data: history.id.toString()));
+    final loadingMissingData = msg.key == MsgType.missingData;
+    final pendingClipboardCopy = await _processData(
+      history,
+      historyContent,
+      opRecord.method,
+      msg.send,
+      copyImageToClipboard: _shouldCopyImageDuringSync(
+        history,
+        opRecord.method,
+        loadingMissingData,
+      ),
+    );
+    try {
+      final cnt = await _process2Db(
+        history,
+        opRecord.method,
+        loadingMissingData,
+        true,
+        pendingImageClipboardCopy: pendingClipboardCopy,
+      );
+      if (cnt <= 0) return;
+      await _notifyReceivedClipboardIfNeeded(
+        history: history,
+        method: opRecord.method,
+        loadingMissingData: loadingMissingData,
+        senderId: msg.send.guid,
+        fallbackSenderName: msg.send.name,
+      );
+      notifyHistoryWindow();
+      //将同步过来的数据添加到本地操作记录
+      dbService.opRecordDao.add(opRecord.copyWith(data: history.id.toString()));
+    } finally {
+      await pendingClipboardCopy?.cancel();
+    }
   }
 
   @override
@@ -824,17 +968,44 @@ class HistoryController extends GetxController with WidgetsBindingObserver imple
       return _updateHistoryTop(history);
     }
 
-    await _processData(history, historyContent, opRecord.method, DevInfo.fromDevice(sender));
-    final cnt = await _process2Db(history, opRecord.method, loadingMissingData, false);
-    if (cnt <= 0) return;
-    notifyHistoryWindow();
-    //将同步过来的数据添加到本地操作记录
-    await dbService.opRecordDao.add(
-      opRecord.copyWith(
-        data: history.id.toString(),
-        storageSync: true,
+    final pendingClipboardCopy = await _processData(
+      history,
+      historyContent,
+      opRecord.method,
+      DevInfo.fromDevice(sender),
+      copyImageToClipboard: _shouldCopyImageDuringSync(
+        history,
+        opRecord.method,
+        loadingMissingData,
       ),
     );
+    try {
+      final cnt = await _process2Db(
+        history,
+        opRecord.method,
+        loadingMissingData,
+        false,
+        pendingImageClipboardCopy: pendingClipboardCopy,
+      );
+      if (cnt <= 0) return;
+      await _notifyReceivedClipboardIfNeeded(
+        history: history,
+        method: opRecord.method,
+        loadingMissingData: loadingMissingData,
+        senderId: sender.guid,
+        fallbackSenderName: sender.displayName,
+      );
+      notifyHistoryWindow();
+      //将同步过来的数据添加到本地操作记录
+      await dbService.opRecordDao.add(
+        opRecord.copyWith(
+          data: history.id.toString(),
+          storageSync: true,
+        ),
+      );
+    } finally {
+      await pendingClipboardCopy?.cancel();
+    }
   }
 
   ///添加页面和数据库数据

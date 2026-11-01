@@ -1109,6 +1109,12 @@ class ZhCNTranslation extends AbstractTranslations {
         return "接收文件后发起通知";
       case TranslationKey.preferenceSettingsNotifyOnReceivedFileDesc:
         return "点击通知后自动打开文件";
+      case TranslationKey.preferenceSettingsNotifyOnReceivedClipboard:
+        return "接收其他设备剪贴板后发起通知";
+      case TranslationKey.preferenceSettingsNotifyOnReceivedClipboardDesc:
+        return "接收文本时显示前50个字符，接收图片时显示缩略图";
+      case TranslationKey.receivedClipboardNotificationTitle:
+        return "收到来自 @devName 的剪贴板";
       case TranslationKey.notification:
         return "通知";
       case TranslationKey.aboutPageDatabaseVersionItemName:

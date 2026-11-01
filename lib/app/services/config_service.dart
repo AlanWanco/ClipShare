@@ -516,6 +516,11 @@ class ConfigService extends GetxService {
 
   bool get notifyOnReceivedFile => _notifyOnReceivedFile.value;
 
+  //接收其他设备剪贴板后发起通知
+  final _notifyOnReceivedClipboard = false.obs;
+
+  bool get notifyOnReceivedClipboard => _notifyOnReceivedClipboard.value;
+
   //webdav配置
   final _webdavConfig = Rx<WebDAVConfig?>(null);
 
@@ -818,6 +823,10 @@ class ConfigService extends GetxService {
     _enableRecordNotification.value = (await cfg.getConfigByKey(ConfigKey.enableRecordNotification, false));
     _enableShowMobileNotification.value = (await cfg.getConfigByKey(ConfigKey.enableShowMobileNotification, false));
     _notifyOnReceivedFile.value = (await cfg.getConfigByKey(ConfigKey.notifyOnReceivedFile, false));
+    _notifyOnReceivedClipboard.value = (await cfg.getConfigByKey(
+      ConfigKey.notifyOnReceivedClipboard,
+      false,
+    ));
     _webdavConfig.value = (await cfg.getConfigByKey(
       ConfigKey.webdavConfig,
       null,
@@ -1564,6 +1573,15 @@ class ConfigService extends GetxService {
   Future<void> setNotifyOnReceivedFile(bool enabled) async {
     await configDao.addOrUpdate(ConfigKey.notifyOnReceivedFile, enabled.toString());
     _notifyOnReceivedFile.value = enabled;
+  }
+
+  ///控制接收其他设备剪贴板时是否发送系统通知
+  Future<void> setNotifyOnReceivedClipboard(bool enabled) async {
+    await configDao.addOrUpdate(
+      ConfigKey.notifyOnReceivedClipboard,
+      enabled.toString(),
+    );
+    _notifyOnReceivedClipboard.value = enabled;
   }
 
   ///保存 webdav 配置

@@ -126,6 +126,26 @@ class SettingsNotificationPage extends SettingsSectionView {
           },
         ),
       ),
+      SettingCard(
+        searchKeys: const [
+          TranslationKey.preferenceSettingsNotifyOnReceivedClipboard,
+          TranslationKey.preferenceSettingsNotifyOnReceivedClipboardDesc,
+        ],
+        title: Text(
+          TranslationKey.preferenceSettingsNotifyOnReceivedClipboard.tr,
+        ),
+        description: Text(
+          TranslationKey.preferenceSettingsNotifyOnReceivedClipboardDesc.tr,
+        ),
+        value: appConfig.notifyOnReceivedClipboard,
+        action: (v) => Switch(
+          value: v,
+          onChanged: (checked) {
+            HapticFeedback.mediumImpact();
+            appConfig.setNotifyOnReceivedClipboard(checked);
+          },
+        ),
+      ),
     ];
   }
 }

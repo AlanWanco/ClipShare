@@ -24,6 +24,136 @@ bool _isWaylandSession() {
           environment['WAYLAND_DISPLAY']?.isNotEmpty == true);
 }
 
+class PendingWaylandImageClipboardCopy {
+  PendingWaylandImageClipboardCopy({
+    required Process process,
+    required ClipboardService? clipboardService,
+    required bool ignoreMarked,
+    required Future<bool> inputReady,
+  }) : _process = process,
+       _clipboardService = clipboardService,
+       _ignoreMarked = ignoreMarked,
+       _inputReady = inputReady;
+
+  final Process _process;
+  final ClipboardService? _clipboardService;
+  final Future<bool> _inputReady;
+  bool _ignoreMarked;
+  bool _finished = false;
+
+  Future<bool> waitForInput() => _inputReady;
+
+  Future<bool> commit() async {
+    if (_finished) return false;
+    _finished = true;
+
+    if (!await _inputReady) {
+      _process.kill();
+      _cancelIgnore();
+      logger.warn(
+        _waylandClipboardTag,
+        'wl-copy failed while receiving image bytes',
+      );
+      return false;
+    }
+
+    try {
+      // Keep stdin open until persistence and history insertion succeed.
+      await _process.stdin.close();
+      final exitCode = await _process.exitCode;
+      if (exitCode != 0) {
+        _cancelIgnore();
+        logger.warn(_waylandClipboardTag, 'wl-copy exited with code $exitCode');
+        return false;
+      }
+      return true;
+    } catch (err, stack) {
+      _process.kill();
+      _cancelIgnore();
+      logger.error(
+        _waylandClipboardTag,
+        'copy image bytes to Wayland clipboard failed: $err',
+        stack,
+      );
+      return false;
+    }
+  }
+
+  Future<void> cancel() async {
+    if (_finished) return;
+    _finished = true;
+    _process.kill();
+    _cancelIgnore();
+    try {
+      await _process.exitCode.timeout(const Duration(seconds: 2));
+    } catch (_) {
+      // The process may already have exited or may not respond to termination.
+    }
+  }
+
+  void _cancelIgnore() {
+    if (!_ignoreMarked) return;
+    _clipboardService?.cancelIgnoreNextClipboardContent(
+      ClipboardContentType.image,
+    );
+    _ignoreMarked = false;
+  }
+}
+
+Future<PendingWaylandImageClipboardCopy?> beginWaylandImageClipboardCopy(
+  String imagePath,
+  List<int> imageBytes,
+) async {
+  if (!_isWaylandSession()) return null;
+
+  Process? process;
+  ClipboardService? clipboardService;
+  var ignoreMarked = false;
+  try {
+    if (Get.isRegistered<ClipboardService>()) {
+      clipboardService = Get.find<ClipboardService>();
+      clipboardService.ignoreNextClipboardContent(
+        ClipboardContentType.image,
+      );
+      ignoreMarked = true;
+    }
+    process = await Process.start('/usr/bin/wl-copy', [
+      '--type',
+      _waylandImageMimeType(imagePath),
+    ]);
+    final inputReady = process.stdin
+        .addStream(Stream<List<int>>.value(imageBytes))
+        .then<bool>((_) => true)
+        .catchError((Object err, StackTrace stack) {
+          logger.error(
+            _waylandClipboardTag,
+            'wl-copy failed while receiving image bytes: $err',
+            stack,
+          );
+          return false;
+        });
+    return PendingWaylandImageClipboardCopy(
+      process: process,
+      clipboardService: clipboardService,
+      ignoreMarked: ignoreMarked,
+      inputReady: inputReady,
+    );
+  } catch (err, stack) {
+    process?.kill();
+    if (ignoreMarked) {
+      clipboardService!.cancelIgnoreNextClipboardContent(
+        ClipboardContentType.image,
+      );
+    }
+    logger.error(
+      _waylandClipboardTag,
+      'could not start wl-copy for image bytes: $err',
+      stack,
+    );
+    return null;
+  }
+}
+
 String _waylandImageMimeType(String path) {
   final extension = path.toLowerCase().split('.').last;
   switch (extension) {

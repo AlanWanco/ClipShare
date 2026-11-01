@@ -62,6 +62,7 @@ enum ConfigKey {
   enableRecordNotification,
   enableShowMobileNotification,
   notifyOnReceivedFile,
+  notifyOnReceivedClipboard,
   notificationBlackWhiteList,
   notificationServer,
   mobileDevIdGenerateWay,

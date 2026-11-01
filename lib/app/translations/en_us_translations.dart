@@ -1101,6 +1101,12 @@ class EnUSTranslation extends AbstractTranslations {
         return "Notify after receiving files";
       case TranslationKey.preferenceSettingsNotifyOnReceivedFileDesc:
         return "Click notification to open file";
+      case TranslationKey.preferenceSettingsNotifyOnReceivedClipboard:
+        return "Notify when receiving clipboard items";
+      case TranslationKey.preferenceSettingsNotifyOnReceivedClipboardDesc:
+        return "Show the first 50 characters of text or an image thumbnail when clipboard data arrives from another device.";
+      case TranslationKey.receivedClipboardNotificationTitle:
+        return "Clipboard received from @devName";
       case TranslationKey.notification:
         return "Notification";
       case TranslationKey.aboutPageDatabaseVersionItemName:
