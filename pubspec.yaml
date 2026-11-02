@@ -279,8 +279,9 @@ flutter:
       platforms:
         - ios
 
+# 等待 clipshare_clipboard_listener 发布包含 Windows DIB 像素偏移修复（aa2013/ClipboardListener#8）的版本后移除本覆盖。
 dependency_overrides:
   clipshare_clipboard_listener:
     git:
-      url: https://github.com/AlanWanco/ClipboardListener.git
-      ref: fix/windows-dib-pixel-offset
+      url: https://github.com/aa2013/ClipboardListener.git
+      ref: 28b4074e39ac892dc9690a9c2018c2596b436c61
